@@ -64,6 +64,7 @@ class WhisperVulkanPackaging(unittest.TestCase):
         self.assertIn("^[0-9a-f]{40}$", workflow)
         publish_script = workflow.split("      - name: Publish dependency release", 1)[1]
         publish_script = publish_script.split("        run: |", 1)[1]
+        publish_script = publish_script.split("\n\n", 1)[0]
         self.assertNotIn("${{ inputs.", publish_script)
 
     def test_bundle_ci_runs_only_for_what_the_bundle_is_built_from(self):
@@ -526,11 +527,45 @@ class WindowsVulkanPackaging(unittest.TestCase):
         self.assertLess(windows.index("- name: Validate source coordinates"),
                         windows.index("- name: Check out pinned whisper.cpp"))
         self.assertGreaterEqual(windows.count("persist-credentials: false"), 4)
-        publish = workflow.split("\n  publish:", 1)[1]
-        self.assertIn("needs: [build, build-windows, smoke-windows]", publish)
+        sbom = windows.split("  sbom-windows:", 1)[1]
+        self.assertIn("needs: build-windows", sbom)
+        self.assertNotIn("inputs.publish", sbom)
+        self.assertIn("cyclonedx-cli@sha256:", sbom)
+        self.assertIn("whisper-bin-win-vulkan-x64.cdx.json", sbom)
+        publish, windows_publish = workflow.split("\n  publish:", 1)[1].split(
+            "\n  publish-windows:", 1)
+        self.assertNotIn("win-vulkan", publish)
+        self.assertIn("needs: build\n", publish)
+        self.assertIn("inputs.platforms != 'windows'", publish)
+        self.assertIn("needs: [build-windows, smoke-windows, sbom-windows]",
+                      windows_publish)
+        self.assertIn("inputs.platforms != 'linux'", windows_publish)
+        self.assertIn("github.ref == 'refs/heads/master'", windows_publish)
         self.assertIn("sha256sum --check whisper-bin-win-vulkan-x64.zip.sha256",
-                      publish)
-        self.assertIn("dist/whisper-bin-win-vulkan-x64.cdx.json", publish)
+                      windows_publish)
+        self.assertIn("dist/whisper-bin-win-vulkan-x64.cdx.json", windows_publish)
+        self.assertIn(
+            "RELEASE_TAG: whisper.cpp-v${{ inputs.whisper_version }}-windows",
+            windows_publish)
+        for check in ("--prerelease", "--latest=false", "--verify-tag",
+                      "refusing to replace existing tag"):
+            self.assertIn(check, windows_publish)
+        script = windows_publish.split("        run: |", 1)[1]
+        self.assertNotIn("${{ inputs.", script)
+
+    def test_each_platform_is_built_and_published_on_its_own(self):
+        """An urgent Linux bump must not wait on a Windows build or review,
+        and the default dispatch keeps doing what it did before."""
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        inputs = workflow.split("  platforms:", 1)[1].split("\n      publish:", 1)[0]
+        self.assertIn("default: linux", inputs)
+        self.assertIn("options: [linux, windows, both]", inputs)
+        linux = workflow.split("\n  build:", 1)[1].split("\n    steps:", 1)[0]
+        self.assertIn("inputs.platforms != 'windows'", linux)
+        windows = workflow.split("\n  build-windows:", 1)[1].split("\n    steps:", 1)[0]
+        self.assertIn("inputs.platforms != 'linux'", windows)
+        for job in (linux, windows):
+            self.assertIn("github.event_name == 'pull_request'", job)
         self.assertIn(ggml.MANAGED_WHISPER_WINDOWS_VULKAN,
                       windows_bundle.ASSET + ".zip")
 
@@ -543,12 +578,15 @@ class WindowsVulkanPackaging(unittest.TestCase):
         version = re.search(r'REVIEWED_WHISPER_WINDOWS_VERSION: "([0-9.]*)"\n',
                             workflow).group(1)
         pinned = ggml.MANAGED_WHISPER_WINDOWS_SHA256
+        self.assertEqual(
+            f"whisper.cpp-{ggml.MANAGED_WHISPER_WINDOWS_VERSION}-windows",
+            ggml.MANAGED_WHISPER_WINDOWS_RELEASE)
         if pinned == ggml.UNREVIEWED_DIGEST:
             return
         self.assertRegex(pinned, r"^[0-9a-f]{64}$")
         self.assertEqual(reviewed, pinned)
         self.assertEqual(f"v{version}", ggml.MANAGED_WHISPER_WINDOWS_VERSION)
-        self.assertEqual(f"whisper.cpp-v{version}",
+        self.assertEqual(f"whisper.cpp-v{version}-windows",
                          ggml.MANAGED_WHISPER_WINDOWS_RELEASE)
 
 
