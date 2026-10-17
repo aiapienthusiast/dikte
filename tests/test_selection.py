@@ -266,7 +266,7 @@ class LinuxClipboard(DikteTest):
             (completed(1, stderr=b"Nothing is copied\n"), "empty"),
             (completed(stdout=b"text/plain;charset=utf-8\nUTF8_STRING\n"), "text"),
             (completed(stdout=b"image/png\n"), "other"),
-            (completed(1, stderr=b"Failed to connect"), "other"),
+            (completed(1, stderr=b"Failed to connect"), "unknown"),
         ]
         for result, expected in cases:
             with self.subTest(expected=expected, err=result.stderr):
@@ -286,7 +286,7 @@ class LinuxClipboard(DikteTest):
 
     def test_no_tool_is_left_alone(self):
         kind, run = self.kind(paste.WAYLAND, completed(), tools=())
-        self.assertEqual(kind, "other")
+        self.assertEqual(kind, "unknown")
         run.assert_not_called()
 
     def snap(self, kind, clipboard=b"old"):
@@ -306,8 +306,35 @@ class LinuxClipboard(DikteTest):
 
     def test_an_image_on_the_linux_clipboard_is_never_read_as_text(self):
         saved, read = self.snap("other")
-        self.assertIs(saved, selection.UNREADABLE)
+        self.assertIs(saved, selection.NOT_TEXT)
         read.assert_not_called()
+
+    def test_a_failed_question_is_unavailable_not_empty(self):
+        saved, read = self.snap("unknown")
+        self.assertIs(saved, selection.UNAVAILABLE)
+        read.assert_not_called()
+
+    def test_what_counts_as_text(self):
+        cases = {
+            # A browser's text copy.
+            b"text/html\ntext/_moz_htmlcontext\ntext/_moz_htmlinfo\nUTF8_STRING\n"
+            b"COMPOUND_TEXT\nTEXT\nSTRING\ntext/plain;charset=utf-8\ntext/plain\n"
+            b"text/x-moz-url-priv\n": "text",
+            b"TARGETS\nTIMESTAMP\nSAVE_TARGETS\ntext/html\ntext/plain\n"
+            b"chromium/x-source-url\n": "text",
+            # Firefox "Copy Image": an image beside a text form of it.
+            b"text/html\nimage/png\ntext/plain\n": "other",
+            # A file manager's copy.
+            b"text/uri-list\nx-special/gnome-copied-files\ntext/plain\n": "other",
+            b"text/uri-list\n": "other",
+            # A Qt application's image.
+            b"application/x-qt-image\nimage/png\n": "other",
+            b"TARGETS\nTIMESTAMP\n": "other",
+        }
+        for offer, expected in cases.items():
+            with self.subTest(offer=offer):
+                kind, _ = self.kind(paste.WAYLAND, completed(stdout=offer))
+                self.assertEqual(kind, expected)
 
     def test_an_empty_clipboard_lets_the_copy_fallback_run(self):
         calls = mock.Mock()
@@ -404,13 +431,31 @@ class Apply(DikteTest):
                                                  delay=selection.APPLY_DELAY, focus=9)
         self.calls.copy_bytes.assert_called_once_with(b"before")
 
-    def test_an_unreadable_clipboard_is_not_overwritten(self):
-        with mock.patch.object(selection, "snapshot", return_value=selection.UNREADABLE):
+    def test_a_clipboard_holding_an_image_is_not_overwritten(self):
+        with mock.patch.object(selection, "snapshot",
+                               return_value=selection.NOT_TEXT) as snap:
             with self.assertRaises(paste.PasteError) as caught:
                 selection.apply("New text.", self.conf)
-        self.assertIn("Use Copy", str(caught.exception))
+        self.assertIn("image or files", str(caught.exception))
+        self.assertEqual(snap.call_count, 1)   # not worth asking again
         self.calls.copy.assert_not_called()
         self.calls.press.assert_not_called()
+
+    def test_a_busy_clipboard_is_asked_again_before_giving_up(self):
+        with mock.patch.object(selection, "snapshot",
+                               return_value=selection.UNAVAILABLE) as snap:
+            with self.assertRaises(paste.PasteError) as caught:
+                selection.apply("New text.", self.conf)
+        self.assertIn("could not be read just now", str(caught.exception))
+        self.assertEqual(snap.call_count, selection.APPLY_TRIES)
+        self.calls.copy.assert_not_called()
+
+    def test_a_clipboard_that_frees_up_is_used(self):
+        with mock.patch.object(selection, "snapshot", side_effect=[
+                selection.UNAVAILABLE, selection.UNAVAILABLE, b"before"]):
+            selection.apply("New text.", self.conf)
+        self.calls.copy.assert_called_once_with("New text.")
+        self.calls.copy_bytes.assert_called_once_with(b"before")
 
     def test_a_failed_paste_leaves_the_text_to_paste_by_hand(self):
         self.calls.press.side_effect = paste.PasteError("no ydotool")
@@ -522,6 +567,15 @@ class Window(DikteTest):
                 lock.release()
             first.join(2)
         copy.assert_called_once()
+
+    def test_a_stale_window_is_not_brought_back(self):
+        window, _ = self.make(apply_fn=mock.Mock(side_effect=paste.PasteError("no")))
+        window.show()
+        window.stale = True
+        window.apply()
+        window._thread.join(2)
+        QApplication.processEvents()
+        self.assertFalse(window.isVisible())
 
     def test_a_failed_apply_brings_the_answer_back(self):
         window, _ = self.make(apply_fn=mock.Mock(side_effect=paste.PasteError("no")))
@@ -643,6 +697,7 @@ class App(DikteTest):
         target.front_before = None
         target.assist_grab = None
         target.answer_window = None
+        target._retired_answers = []
         target.paste_override = {}
         target.last_toggle = {}
         target._waiters = {}
@@ -781,6 +836,25 @@ class App(DikteTest):
         QApplication.processEvents()
         target._report.assert_called_once()
         self.assertIn("late", target._report.call_args.args[0])
+        # Let go of on this thread, now that its work is over.
+        self.assertEqual(target._retired_answers, [])
+
+    def test_a_busy_replaced_window_is_kept_and_marked_stale(self):
+        target = self.controller(True)
+        target._retired_answers = []
+        old = mock.Mock(busy=True, stale=False)
+        target.answer_window = old
+        payload = {"instruction": "q", "text": "a", "kind": selection.ANSWER,
+                   "selection": "", "warning": "", "focus": None}
+        with mock.patch.object(app, "_present"):
+            app.Dikte._show_answer(target, payload, "Claude")
+        self.addCleanup(target.answer_window.deleteLater)
+        self.assertTrue(old.stale)
+        old.close.assert_called_once_with()
+        self.assertEqual(target._retired_answers, [old])
+        old.join.return_value = True
+        app.Dikte._release_answers(target)
+        self.assertEqual(target._retired_answers, [])
 
     def test_a_discarded_question_cancels_its_copy(self):
         target = self.controller(True)

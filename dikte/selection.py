@@ -58,6 +58,8 @@ COPY_DELAY = 0.25
 SETTLE = 0.3
 # How long Apply waits for the window it hid to hand focus back.
 APPLY_DELAY = 0.4
+# How many times Apply reads a clipboard that could not be read, 0.1 s apart.
+APPLY_TRIES = 4
 # A selection longer than this is cut, and the prompt says so: a whole page
 # pasted in by accident should not become a bill. A cut selection is never
 # offered Apply, which would paste the shorter rewrite over all of it.
@@ -112,10 +114,12 @@ def copy_shortcut():
 
 
 # What a snapshot of the clipboard can be besides its contents: known to be
-# empty, so emptying it again is a faithful restore, or holding something that
-# could not be read back (an image, files, a clipboard another program has
-# open), which nothing here may overwrite for good.
-EMPTY, UNREADABLE = object(), object()
+# empty, so emptying it again is a faithful restore; holding something other
+# than text (an image, files), which cannot be put back; or not readable right
+# now (held by another program, a tool that failed or is missing). Nothing
+# here may overwrite either of the last two for good.
+EMPTY, NOT_TEXT, UNAVAILABLE = object(), object(), object()
+UNREADABLE = (NOT_TEXT, UNAVAILABLE)
 
 # Windows virtual-key codes of the modifiers a hotkey can still be holding:
 # Shift, Ctrl, Alt and both Windows keys.
@@ -124,12 +128,21 @@ WIN_MODIFIERS = (0x10, 0x11, 0x12, 0x5B, 0x5C)
 
 # What the clipboard tools call text, besides the text/* MIME types.
 _TEXT_TARGETS = {"UTF8_STRING", "STRING", "TEXT", "COMPOUND_TEXT"}
+# Types that describe the offer rather than carry content, and say nothing
+# about whether it is text.
+_META_TARGETS = {"TARGETS", "TIMESTAMP", "MULTIPLE", "SAVE_TARGETS", "DELETE",
+                 "INSERT_PROPERTY", "INSERT_SELECTION"}
+_META_PREFIXES = ("chromium/x-", "text/x-moz-url-priv", "text/_moz_",
+                  "application/x-kde-", "x-kde-")
+# text/* that is not text to paste: a list of files or links.
+_NOT_TEXT = {"text/uri-list", "text/x-moz-url"}
 WAYLAND_TYPES = ["wl-paste", "--list-types"]
 X11_TARGETS = ["xclip", "-selection", "clipboard", "-out", "-target", "TARGETS"]
 
 
 def snapshot():
-    """The clipboard as restore() can put it back, or EMPTY, or UNREADABLE."""
+    """The clipboard as restore() can put it back, or EMPTY, NOT_TEXT or
+    UNAVAILABLE."""
     here = paste.desktop()
     if here in (paste.WAYLAND, paste.X11):
         # read_clipboard() answers None for an empty clipboard and for one it
@@ -138,25 +151,31 @@ def snapshot():
         # of types on offer settles both.
         kind = _linux_clipboard_kind(here)
         if kind != "text":
-            return EMPTY if kind == "empty" else UNREADABLE
+            return {"empty": EMPTY, "other": NOT_TEXT}.get(kind, UNAVAILABLE)
     previous = paste.read_clipboard()
     if here is paste.WINDOWS:
         # Only text is read there, so b"" is either an empty clipboard or one
         # holding something else; the format count tells the two apart.
         if previous == b"":
-            return EMPTY if _win_clipboard_empty() else UNREADABLE
-    return UNREADABLE if previous is None else previous
+            return EMPTY if _win_clipboard_empty() else NOT_TEXT
+    return UNAVAILABLE if previous is None else previous
 
 
 def _linux_clipboard_kind(here):
-    """'empty', 'text', or 'other' (non-text, or the question failed)."""
+    """'empty', 'text', 'other' (something besides text), or 'unknown'.
+
+    A clipboard is text only when everything it offers is text: a browser's
+    text copy (text/html beside text/plain) is, while a copied image or file
+    that also offers a text form is not, since putting back only the text
+    would lose the rest.
+    """
     argv = WAYLAND_TYPES if here is paste.WAYLAND else X11_TARGETS
     if not shutil.which(argv[0]):
-        return "other"
+        return "unknown"
     try:
         res = subprocess.run(argv, capture_output=True, timeout=3)
     except (subprocess.SubprocessError, OSError):
-        return "other"
+        return "unknown"
     types = [line.strip() for line in res.stdout.decode("utf-8", "replace")
              .splitlines() if line.strip()]
     if res.returncode != 0 or not types:
@@ -168,8 +187,12 @@ def _linux_clipboard_kind(here):
         empty = not types and (res.returncode == 0 or any(
             phrase in err for phrase in ("no selection", "nothing is copied",
                                          "not available")))
-        return "empty" if empty else "other"
-    if any(name.startswith("text/") or name in _TEXT_TARGETS for name in types):
+        return "empty" if empty else "unknown"
+    content = [name for name in types if name not in _META_TARGETS
+               and not name.startswith(_META_PREFIXES)]
+    text = [name for name in content if name in _TEXT_TARGETS or (
+        name.startswith("text/") and name.split(";")[0] not in _NOT_TEXT)]
+    if content and len(text) == len(content):
         return "text"
     return "other"
 
@@ -182,8 +205,8 @@ def _win_clipboard_empty():
 
 
 def restore(saved):
-    """Put back what snapshot() took. UNREADABLE is left alone."""
-    if saved is UNREADABLE:
+    """Put back what snapshot() took. NOT_TEXT and UNAVAILABLE are left alone."""
+    if saved in UNREADABLE:
         return
     if saved is EMPTY:
         with contextlib.suppress(paste.PasteError):
@@ -221,7 +244,7 @@ def copy_selection(focus=None, cancelled=None):
     goes ahead as if nothing were selected.
     """
     saved = snapshot()
-    if saved is UNREADABLE:
+    if saved in UNREADABLE:
         return ""
     try:
         paste.copy("")
@@ -441,12 +464,22 @@ def apply(text, conf, focus=None):
     """
     with _paste_lock():
         saved = snapshot()
-        if saved is UNREADABLE:
-            # Pasting goes through the clipboard, and what is on it now (an
-            # image, files) could not be put back afterwards.
+        # Held by another program for a moment is worth a few short tries.
+        for _ in range(APPLY_TRIES - 1):
+            if saved is not UNAVAILABLE:
+                break
+            time.sleep(0.1)
+            saved = snapshot()
+        # Pasting goes through the clipboard, and what is on it now could
+        # not be put back afterwards, so nothing is pasted at all.
+        if saved is NOT_TEXT:
             raise paste.PasteError(t(
-                "The clipboard holds something that cannot be put back, so "
-                "nothing was pasted. Use Copy instead."))
+                "The clipboard holds an image or files, which pasting would "
+                "lose, so nothing was pasted. Use Copy instead."))
+        if saved is UNAVAILABLE:
+            raise paste.PasteError(t(
+                "The clipboard could not be read just now, so nothing was "
+                "pasted. Try again, or use Copy."))
         paste.copy(text)
         try:
             paste.press(conf["paste_shortcut"], delay=APPLY_DELAY, focus=focus)

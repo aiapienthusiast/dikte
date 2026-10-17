@@ -40,6 +40,9 @@ class AnswerWindow(QDialog):
     apply_failed = pyqtSignal(str)
     # The outcome of Copy, off the interface thread: '' or the error.
     copy_done = pyqtSignal(str)
+    # The last thing an Apply or Copy thread does, so whoever keeps a closed
+    # window alive knows when it may let go of it.
+    work_done = pyqtSignal()
 
     def __init__(self, instruction, answer, selected="", can_apply=False,
                  apply_fn=None, agent="", parent=None):
@@ -47,6 +50,9 @@ class AnswerWindow(QDialog):
         self._apply_fn = apply_fn
         self._thread = None
         self._copy_thread = None
+        # Set once a newer answer has taken this one's place: a failed Apply
+        # then must not bring the old window back beside the new one.
+        self.stale = False
         self.copy_done.connect(self._copied)
         # Nothing was pasted, so the answer comes back to be copied instead.
         self.apply_failed.connect(self._reopen)
@@ -123,6 +129,8 @@ class AnswerWindow(QDialog):
                 self.apply_failed.emit(str(exc))
             except Exception as exc:  # the window is hidden; say it somewhere
                 self.apply_failed.emit(t("Unexpected error: {error}", error=exc))
+            finally:
+                self.work_done.emit()
 
         self._thread = threading.Thread(target=work, daemon=True)
         self._thread.start()
@@ -145,15 +153,25 @@ class AnswerWindow(QDialog):
                     paste.copy(text)
             except Exception as exc:  # the button must always come back
                 self.copy_done.emit(str(exc) or t("Copy failed"))
-                return
-            self.copy_done.emit("")
+            else:
+                self.copy_done.emit("")
+            finally:
+                self.work_done.emit()
 
         self._copy_thread = threading.Thread(target=work, daemon=True)
         self._copy_thread.start()
 
     def _reopen(self, _message):
-        self.show()
-        self.raise_()
+        if not self.stale:
+            self.show()
+            self.raise_()
+
+    def join(self, timeout=1.0):
+        """Wait for this window's threads to end; whether they all have."""
+        for thread in (self._thread, self._copy_thread):
+            if thread is not None:
+                thread.join(timeout)
+        return not self.busy
 
     def _copied(self, error):
         if error:

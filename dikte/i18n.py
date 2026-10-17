@@ -1202,10 +1202,14 @@ TR = {
         "saklanır; düzenlemelerde bu, yeniden yazılmış metindir. Linux'ta en "
         "son vurgulanan metin, vurgu kalktıktan sonra da gönderilebilir. "
         "Windows'ta panoda yalnızca bir resim ya da dosya varsa seçim okunmaz.",
-    "The clipboard holds something that cannot be put back, so nothing was "
-    "pasted. Use Copy instead.":
-        "Panoda geri konamayacak bir şey var, bu yüzden hiçbir şey "
-        "yapıştırılmadı. Bunun yerine kopyalamayı kullan.",
+    "The clipboard holds an image or files, which pasting would lose, so "
+    "nothing was pasted. Use Copy instead.":
+        "Panoda bir resim ya da dosya var ve yapıştırmak onu kaybettirirdi, bu "
+        "yüzden hiçbir şey yapıştırılmadı. Bunun yerine kopyalamayı kullan.",
+    "The clipboard could not be read just now, so nothing was pasted. Try "
+    "again, or use Copy.":
+        "Pano şu an okunamadı, bu yüzden hiçbir şey yapıştırılmadı. Yeniden "
+        "dene ya da kopyalamayı kullan.",
     "{name} cannot run without tools, so selected text is not sent to it. "
     "Use Claude Code or a chat provider.":
         "{name} araçsız çalıştırılamadığı için seçili metin ona gönderilmez. "

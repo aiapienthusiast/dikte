@@ -180,6 +180,11 @@ class Dikte:
         # key press and the window its answer is shown in.
         self.assist_grab = None
         self.answer_window = None
+        # Replaced answer windows whose Apply or Copy is still running. Their
+        # threads hold them too, and a thread dropping the last reference would
+        # destroy a Qt window off the interface thread, so they are kept here
+        # and let go of on this thread once the work is over.
+        self._retired_answers = []
 
         self.overlay = Overlay(self.conf["overlay_corner"],
                                screen_name=self.conf["overlay_screen"],
@@ -1329,9 +1334,10 @@ class Dikte:
     def _show_answer(self, payload, agent):
         old = getattr(self, "answer_window", None)
         if old is not None:
-            # Closed, not deleted: it has no parent, and an Apply or Copy still
-            # running holds it in its own closure until it has reported.
+            old.stale = True
             old.close()
+            if old.busy:
+                self._retired_answers = getattr(self, "_retired_answers", []) + [old]
         focus = payload.get("focus")
         selected = payload.get("selection") or ""
         # Apply is for an edit of something that was selected, on a desktop
@@ -1346,8 +1352,19 @@ class Dikte:
         )
         window.apply_failed.connect(
             lambda message: self._report(message, self.ask_overlay))
+        window.work_done.connect(self._release_answers)
         self.answer_window = window
         _present(window)
+
+    def _release_answers(self):
+        """Let go of retired answer windows whose work has ended.
+
+        Runs on the interface thread, queued behind the signal a worker sends
+        as its last act, so the join below waits a moment at most.
+        """
+        self._retired_answers = [window for window in
+                                 getattr(self, "_retired_answers", [])
+                                 if not window.join(timeout=1.0)]
 
     def _on_ask_cancelled(self):
         self.cues.play("failed")
