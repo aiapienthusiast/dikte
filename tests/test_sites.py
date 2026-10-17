@@ -299,6 +299,10 @@ class Editor(DikteTest):
         self.assertIn("firefox", editor.site_status.toolTip())
         self.assertIn("Mozilla Firefox", editor.site_status.toolTip())
         self.assertTrue(editor.read_site_button.isEnabled())
+        # A page's title is its own: markup in it is shown, never drawn.
+        editor._status("x", "<b>Sign in</b> & go")
+        self.assertEqual(editor.site_status.toolTip(),
+                         "<qt>&lt;b&gt;Sign in&lt;/b&gt; &amp; go</qt>")
         editor.store(conf)
         self.assertNotIn("Mozilla", repr(conf["profiles"]))
 

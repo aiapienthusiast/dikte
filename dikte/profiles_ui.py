@@ -10,6 +10,7 @@ anything having been edited.
 """
 
 import copy
+import html
 import itertools
 import threading
 
@@ -690,7 +691,7 @@ class ProfilesEditor(QWidget):
     def _add_typed_site(self):
         if self.add_site(self.site_edit.text()):
             self.site_edit.clear()
-            self.site_status.setText("")
+            self._status("")
 
     def _site_renamed(self, item):
         """A keyword edited in place in the list."""
@@ -716,8 +717,8 @@ class ProfilesEditor(QWidget):
         self._countdown_timer.start()
 
     def _show_countdown(self):
-        self.site_status.setText(t("Switch to the tab… {seconds}",
-                                   seconds=self._countdown))
+        self._status(t("Switch to the tab… {seconds}",
+                       seconds=self._countdown))
 
     def _tick(self):
         self._countdown -= 1
@@ -725,7 +726,7 @@ class ProfilesEditor(QWidget):
             self._show_countdown()
             return
         self._countdown_timer.stop()
-        self.site_status.setText(t("Reading the window in front…"))
+        self._status(t("Reading the window in front…"))
         self._read_site()
 
     def _read_site(self):
@@ -775,9 +776,12 @@ class ProfilesEditor(QWidget):
 
     def _status(self, line, detail=""):
         """The one line under the sites, with what lies behind it in its
-        tooltip."""
+        tooltip. A tooltip has no plain-text mode and draws anything that
+        looks like markup as markup, and the detail carries a web page's own
+        title, so it is escaped and marked as rich text to show literally."""
         self.site_status.setText(line)
-        self.site_status.setToolTip(detail)
+        self.site_status.setToolTip(
+            "<qt>" + html.escape(detail) + "</qt>" if detail else "")
 
     def _fill_sites(self, profile):
         filling, self._filling = self._filling, True
@@ -991,6 +995,8 @@ class ProfilesEditor(QWidget):
     def _probed(self, _present):
         try:
             self.detection.setText(self.detection_text())
+            # Hidden when the editor was built before the answer came.
+            self.detection.setVisible(bool(self.detection.text()))
         except RuntimeError:
             pass  # an editor already deleted on the C++ side
 

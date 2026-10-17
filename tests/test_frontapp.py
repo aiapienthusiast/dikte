@@ -304,6 +304,18 @@ class DesktopNotes(DikteTest):
         self.assertNotIn("Window Calls", self.note(frontapp._gnome, present=True))
         self.assertNotIn("Window Calls", self.note(frontapp._gnome, present=None))
 
+    def test_the_gnome_note_appears_when_the_probe_answers_late(self):
+        from dikte import profiles_ui
+        with mock.patch.object(frontapp, "backend", return_value=frontapp._gnome), \
+                mock.patch.dict(frontapp.gnome_extension, {"present": None}), \
+                mock.patch.dict(profiles_ui._PROBE, {"started": True}):
+            editor = profiles_ui.ProfilesEditor()
+            self.assertTrue(editor.detection.isHidden())
+            frontapp.gnome_extension["present"] = False
+            editor._probed(False)
+            self.assertFalse(editor.detection.isHidden())
+            self.assertIn("Window Calls", editor.detection.text())
+
     def test_a_failed_lookup_records_that_the_extension_is_missing(self):
         failed = subprocess.CompletedProcess(
             [], 1, stdout="",
