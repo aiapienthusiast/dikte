@@ -1,10 +1,10 @@
 # The Vulkan whisper-server bundle
 
-whisper.cpp publishes a CPU-only archive for Linux, so the graphics card on a
-Linux machine is out of reach through the Download button. This directory
-builds the archive upstream does not: `whisper-server` with a dynamic Vulkan
-backend next to the CPU ones, for x86_64, against the Ubuntu 22.04 runtime
-contract.
+whisper.cpp publishes a CPU-only archive for Linux, and CPU, BLAS and CUDA
+ones for Windows, so most graphics cards are out of reach through the Download
+button. This directory builds the archives upstream does not: `whisper-server`
+with a dynamic Vulkan backend next to the CPU ones, for x86_64, against the
+Ubuntu 22.04 runtime contract, and for Windows x64 with `windows_bundle.py`.
 
 It is published as a release of Dikte's own, `whisper.cpp-v<version>`, marked
 as a prerelease and kept off Latest so that neither the update check nor the
@@ -18,16 +18,21 @@ to upstream's CPU archive, and the settings window says when it did.
    `dependency-release` environment a required reviewer. Both are repository
    settings, not something this workflow can do for itself.
 2. Run **whisper.cpp Vulkan bundle** on `master` with the new version and its
-   peeled commit, `expected_sha256` empty and `publish: false`. The run builds
-   the archive and reports its digest; without a reviewed digest it refuses to
-   publish, which is what the first run is for.
-3. Review that digest against a build of your own, then run the workflow again
-   with the same version and commit, `expected_sha256` set to it, and
+   peeled commit, `expected_sha256` and `expected_windows_sha256` empty and
+   `publish: false`. The run builds both archives and reports their digests;
+   without reviewed digests it refuses to publish, which is what the first run
+   is for.
+3. Review those digests against builds of your own, then run the workflow
+   again with the same version and commit, both digests set, and
    `publish: true`. Approve the environment when it asks.
 4. Write the same version, tag and digest into `MANAGED_WHISPER_RELEASE`,
    `MANAGED_WHISPER_VERSION` and `MANAGED_WHISPER_SHA256` in `dikte/ggml.py`,
    and into `REVIEWED_WHISPER_VERSION` and `REVIEWED_WHISPER_SHA256` in the
-   workflow. `tests/test_packaging.py` holds the two sides together.
+   workflow; the Windows ones go into the `MANAGED_WHISPER_WINDOWS_*` and
+   `REVIEWED_WHISPER_WINDOWS_*` names beside them. Until the Windows digest is
+   filled in, it is a placeholder and every Windows machine gets upstream's
+   build, which is also why README.windows.md still says there is no GPU
+   build to fetch. `tests/test_packaging.py` holds the two sides together.
 5. Ship a Dikte release. Until one goes out, nobody's Dikte knows the new
    bundle exists.
 
@@ -47,3 +52,11 @@ A rebuild months later can fail to resolve, or resolve to something that
 produces a different digest. Treat the published archive as the artifact, not
 as something reproducible on demand: a version bump means building,
 validating, reviewing the new digest and updating the pinned tuple together.
+
+Windows is weaker still. There is no container to pin, so the build runs on
+`windows-latest` with whatever MSVC that image carries, and BUILD-INFO.json
+records both. Two runs on the same image give the same digest; an image update
+can change it. The runner has no GPU either, so CI proves only that the
+archive starts and transcribes on the processor without a Vulkan driver. The
+Vulkan path needs somebody with a card to try it before a digest is
+reviewed.
