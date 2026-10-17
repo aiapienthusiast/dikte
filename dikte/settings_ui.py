@@ -3021,9 +3021,13 @@ class SettingsWindow(QDialog):
         # the processor, and a box that can be set to a card it will never
         # reach is a setting that silently does nothing. The saved choice is
         # left as it is, so a later download that can reach the card picks it
-        # up again.
+        # up again. A specific card saved from an earlier build is the
+        # exception: that one fails to start here, so the box stays usable
+        # until it is moved off it.
         processor_only = ggml.processor_only(ggml.WHISPER, binary)
-        self.local_device.setEnabled(not processor_only)
+        self.local_device.setEnabled(
+            not processor_only
+            or (self.local_device.currentData() or "auto") not in ("auto", "cpu"))
         if processor_only:
             label = self.local_whisper.machine_label
             label.setText(label.text() + "\n" + t(

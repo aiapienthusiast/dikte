@@ -2073,6 +2073,17 @@ class LocalModels(DikteTest):
                          window.local_whisper.machine_label.text())
         self.assertGreaterEqual(window.local_device.findData(identifier), 0)
 
+    def test_a_saved_card_on_a_processor_build_can_still_be_changed(self):
+        """A card chosen on the Vulkan build fails to start on a processor
+        fallback, so the box must not lock that choice in."""
+        identifier = "vulkan:00112233445566778899aabbccddeeff"
+        window = self.window(self.config(local_device=identifier))
+        with mock.patch.object(ggml, "processor_only", return_value=True):
+            window._set_processing_devices((), ())
+            self.assertTrue(window.local_device.isEnabled())
+            window.local_device.setCurrentIndex(window.local_device.findData("cpu"))
+            self.assertFalse(window.local_device.isEnabled())
+
     def test_processing_device_tooltip_names_metal(self):
         window = self.window(cfg.Config())
         tooltip = window.local_device.toolTip()
