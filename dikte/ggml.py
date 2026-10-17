@@ -101,6 +101,20 @@ MANAGED_WHISPER_VULKAN = "whisper-bin-ubuntu-vulkan-x64.tar.gz"
 MANAGED_WHISPER_SHA256 = (
     "c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8"
 )
+# The Windows x64 bundle comes out of the same workflow and the same pinned
+# source, and is published in the release after the Linux one above. Its digest
+# is the empty placeholder until somebody has built that archive and reviewed
+# it: an unreviewed digest matches nothing, so until then every Windows machine
+# falls back to upstream's processor build exactly as Linux does when its
+# bundle is missing.
+UNREVIEWED_DIGEST = ""
+MANAGED_WHISPER_WINDOWS_RELEASE = "whisper.cpp-v1.9.4"
+MANAGED_WHISPER_WINDOWS_VERSION = "v1.9.4"
+MANAGED_WHISPER_WINDOWS_VULKAN = "whisper-bin-win-vulkan-x64.zip"
+MANAGED_WHISPER_WINDOWS_SHA256 = UNREVIEWED_DIGEST
+
+ManagedBundle = collections.namedtuple("ManagedBundle",
+                                       "release version asset sha256")
 
 # Where the models are listed. Neither list is written into Dikte: a catalogue
 # in the source means a release of Dikte for every model somebody else
@@ -392,6 +406,9 @@ def _wanted_assets(program):
         return () if program is WHISPER else (f"bin-macos-{arch}.tar.gz",)
     if sys.platform == "win32":
         if program is WHISPER:
+            # Dikte's own Vulkan build is not in this list: it is a release of
+            # Dikte's, not of whisper.cpp, and _pick_asset asks for it first.
+            #
             # The BLAS build first: on a plain CPU it transcribes about twice
             # as fast as the stock one, and it carries everything it needs.
             # Full names, because "bin-x64.zip" alone would also match the
@@ -412,12 +429,29 @@ def _wanted_assets(program):
 def _managed_whisper(program, tag=""):
     """Whether this machine is one Dikte publishes its own whisper-server for.
 
-    Linux x86_64 with a Vulkan loader on it, and no version asked for by hand:
-    a pinned version is upstream's to answer.
+    Linux or Windows on x86_64 with a Vulkan loader on it, and no version asked
+    for by hand: a pinned version is upstream's to answer. Python on Windows
+    calls the architecture AMD64.
     """
-    return (not tag and program is WHISPER and sys.platform == "linux"
+    return (not tag and program is WHISPER
+            and sys.platform in ("linux", "win32")
             and platform.machine().lower() in ("x86_64", "amd64")
             and _has_vulkan())
+
+
+def _managed_bundle():
+    """Release, version, archive name and reviewed digest for this system.
+
+    Read at call time rather than bound once, so that the pinned tuple is the
+    only place a version bump has to touch.
+    """
+    if sys.platform == "win32":
+        return ManagedBundle(MANAGED_WHISPER_WINDOWS_RELEASE,
+                             MANAGED_WHISPER_WINDOWS_VERSION,
+                             MANAGED_WHISPER_WINDOWS_VULKAN,
+                             MANAGED_WHISPER_WINDOWS_SHA256)
+    return ManagedBundle(MANAGED_WHISPER_RELEASE, MANAGED_WHISPER_VERSION,
+                         MANAGED_WHISPER_VULKAN, MANAGED_WHISPER_SHA256)
 
 
 def _managed_asset(refresh=False):
@@ -427,15 +461,22 @@ def _managed_asset(refresh=False):
     a release that is not there yet, a GitHub that cannot be reached, a file
     that is not the reviewed bytes, leaves upstream's processor build as the
     answer, and the install record says which of the two landed.
+
+    A bundle with no reviewed digest is refused before GitHub is asked at
+    all. The empty placeholder must never be compared with an asset's digest
+    either: a file published without one has an empty digest too, and the two
+    would match.
     """
+    bundle = _managed_bundle()
+    if not bundle.sha256 or bundle.sha256 == UNREVIEWED_DIGEST:
+        return None
     try:
-        _, assets = hub.release(DIKTE_REPO, MANAGED_WHISPER_RELEASE,
-                                refresh=refresh)
+        _, assets = hub.release(DIKTE_REPO, bundle.release, refresh=refresh)
     except hub.HubError:
         return None
     return next((a for a in assets
-                 if a.name.endswith(MANAGED_WHISPER_VULKAN)
-                 and a.sha256 == MANAGED_WHISPER_SHA256), None)
+                 if a.name.endswith(bundle.asset)
+                 and a.sha256 == bundle.sha256), None)
 
 
 def _matching_asset(program, assets):
@@ -453,7 +494,7 @@ def _pick_asset(program, tag="", refresh=False):
 
     Dikte's own Vulkan whisper-server comes before upstream's where this
     machine is one it is built for, because whisper.cpp publishes no Vulkan
-    archive for Linux at all.
+    archive for Linux or Windows at all.
 
     A named tag is taken as given. For the newest, what GitHub answers is not
     always where the builds are: llama.cpp's latest release is a version marker
@@ -465,7 +506,7 @@ def _pick_asset(program, tag="", refresh=False):
     if _managed_whisper(program, tag):
         item = _managed_asset(refresh=refresh)
         if item:
-            return MANAGED_WHISPER_VERSION, item
+            return _managed_bundle().version, item
     named = bool(tag) and tag != "latest"
     missing = None
     try:
@@ -604,6 +645,9 @@ def managed_vulkan_devices(binary, devices=None):
             stderr=subprocess.PIPE,
             text=True,
             timeout=2,
+            # The managed bundle runs on Windows too, where a console program
+            # started from a windowed one would flash a window of its own.
+            creationflags=paths.NO_WINDOW,
         )
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return ()
@@ -760,8 +804,8 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
 
     `tag` is empty for whatever the project released last, which is the point:
     a version pinned in Dikte's source would mean a release of Dikte every time
-    whisper.cpp has one. The Linux Vulkan whisper-server is the exception, and
-    _pick_asset says why.
+    whisper.cpp has one. The Linux and Windows Vulkan whisper-server is the
+    exception, and _pick_asset says why.
     """
     managed = _managed_whisper(program, tag)
     try:
@@ -835,7 +879,7 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
             # where both were on offer, so an install that never had the
             # choice is not made to look like a fallback.
             record["backend"] = (
-                "vulkan" if item.name.endswith(MANAGED_WHISPER_VULKAN)
+                "vulkan" if item.name.endswith(_managed_bundle().asset)
                 else "processor")
         _install_record(program).write_text(json.dumps(record), encoding="utf-8")
     except OSError as exc:
