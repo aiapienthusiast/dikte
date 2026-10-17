@@ -1135,11 +1135,23 @@ def delete_history(rows):
         kept = [json.dumps(row, ensure_ascii=False) + "\n"
                 for row in _read_history() if _row_key(row) not in doomed]
         _write_history(kept)
+    _forget_learning()
 
 
 def clear_history():
     with _FILES_LOCK:
         HISTORY_FILE.unlink(missing_ok=True)
+    _forget_learning()
+
+
+def _forget_learning():
+    """Names still being counted for the dictionary came out of dictations, so
+    they go with the history they came from."""
+    from . import dictionary  # it imports this module
+    try:
+        dictionary.forget_pending()
+    except OSError as exc:
+        print(f"dikte: could not forget the names being learned ({exc})")
 
 
 # --- meetings -------------------------------------------------------------

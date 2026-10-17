@@ -30,9 +30,20 @@ class Migration(DikteTest):
         conf = self.config(transcribe_prompt=text)
         self.assertEqual(dictionary.render_hint(dictionary.records(conf)), text)
 
-    def test_a_repeated_term_is_kept_once(self):
+    def test_every_piece_is_kept_even_a_repeated_one(self):
         conf = self.config(transcribe_prompt="Dikte, dikte, DIKTE")
-        self.assertEqual([r["term"] for r in dictionary.records(conf)], ["Dikte"])
+        self.assertEqual([r["term"] for r in dictionary.records(conf)],
+                         ["Dikte", "dikte", "DIKTE"])
+
+    def test_an_edit_keeps_the_lines_the_text_was_typed_in(self):
+        conf = self.config(transcribe_prompt="Paraşüt, OpenFrame\n\nYusuf İpek\nDikte")
+        found = dictionary.records(conf)
+        found.append(dictionary.entry("Grafana"))
+        dictionary.store(conf, found, dictionary.records(conf))
+        self.assertEqual(conf["transcribe_prompt"],
+                         "Paraşüt, OpenFrame\n\nYusuf İpek\nDikte, Grafana")
+        self.assertEqual(self.read_config_file()["transcribe_prompt"],
+                         "Paraşüt, OpenFrame\n\nYusuf İpek\nDikte, Grafana")
 
 
 class Records(DikteTest):
@@ -49,6 +60,14 @@ class Records(DikteTest):
         # The setting carries the hint, for an older version to read.
         self.assertEqual(self.read_config_file()["transcribe_prompt"],
                          "kubectl, Paraşüt")
+
+    def test_two_records_with_one_spelling_stay_two_after_an_outside_edit(self):
+        conf = self.config()
+        self.stored(conf, [("kube control", "kubectl"), ("kube cuddle", "kubectl")])
+        conf["transcribe_prompt"] = "kubectl, kubectl, Grafana"
+        self.assertEqual([(r["term"], r["spelling"]) for r in dictionary.records(conf)],
+                         [("kube control", "kubectl"), ("kube cuddle", "kubectl"),
+                          ("Grafana", "")])
 
     def test_an_edit_from_the_command_line_wins_over_the_file(self):
         conf = self.config()
@@ -77,7 +96,7 @@ class Records(DikteTest):
         merged = dictionary.write(pending)
         self.assertEqual([r["term"] for r in merged], ["Paraşüt", "OpenFrame", "Claude"])
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertEqual(stored["pending"], {"Grafana": 2})
+        self.assertEqual(stored["pending"], {"Grafana": [2, 0]})
 
     def test_a_deletion_in_the_window_is_a_deletion(self):
         conf = self.config()
@@ -117,8 +136,24 @@ class Learning(DikteTest):
     def test_a_name_mid_sentence_is_found_as_a_run(self):
         self.assertEqual(
             dictionary.candidates("We moved it to Claude Code yesterday. "
-                                  "Then OpenFrame broke."),
+                                  "Then we broke OpenFrame."),
             ["Claude Code", "OpenFrame"])
+
+    def test_a_name_at_a_sentence_start_is_not_cut_short(self):
+        """Not "Code" from "Claude Code is great": the run is kept whole and
+        only counts once it has been seen in the middle of a sentence."""
+        self.assertEqual(dictionary.candidates("Claude Code is great."), [])
+        conf = self.config()
+        self.assertEqual(self.learn(conf, "Claude Code is great.", 5), [])
+        self.assertEqual(self.learn(conf, "Visual Studio Code is open.", 5), [])
+        self.learn(conf, "I opened Claude Code again.")
+        added = self.learn(conf, "Claude Code is great.", 2)
+        self.assertEqual([r["term"] for r in added], ["Claude Code"])
+
+    def test_languages_and_nationalities_are_not_names(self):
+        self.assertEqual(dictionary.candidates(
+            "I write it in English and the Turkish team reads it, "
+            "bunu da Türkçe ve İngilizce yazdım."), [])
 
     def test_sentence_starts_days_and_acronyms_are_not_names(self):
         self.assertEqual(
@@ -126,7 +161,7 @@ class Learning(DikteTest):
             [])
 
     def test_a_turkish_suffix_is_left_off(self):
-        self.assertEqual(dictionary.candidates("Bunu Yusuf'un bilgisayarında yaptım."),
+        self.assertEqual(dictionary.candidates("Bunu dün Yusuf'un bilgisayarında yaptım."),
                          ["Yusuf"])
 
     def test_three_dictations_make_an_entry(self):
@@ -156,17 +191,49 @@ class Learning(DikteTest):
         self.assertEqual(self.learn(conf, "It runs on OpenFrame now.", 3), [])
 
     def test_a_new_line_or_a_list_item_starts_a_sentence(self):
-        self.assertEqual(dictionary.candidates("Notes\nCall Mom\n- Fix the build"),
-                         ["Mom"])
+        self.assertEqual(dictionary.candidates("Notes\nCall the doctor\n- Fix it"), [])
+        self.assertEqual(dictionary.candidates("Notes:\nask Grafana"), ["Grafana"])
 
     def test_a_full_count_still_counts_a_new_word(self):
+        """Even when every word waiting has been seen twice: the ones not seen
+        for longest go, not the newcomer."""
         conf = self.config()
-        dictionary._write([], {f"Word{i}": 1 for i in range(dictionary.PENDING_LIMIT)},
-                          "")
+        dictionary._write([], {f"Word{i}": [2, i] for i in range(dictionary.PENDING_LIMIT)},
+                          "", clock=dictionary.PENDING_LIMIT)
         self.learn(conf, "It runs on OpenFrame now.")
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
         self.assertIn("OpenFrame", stored["pending"])
+        self.assertNotIn("Word0", stored["pending"])
         self.assertEqual(len(stored["pending"]), dictionary.PENDING_LIMIT)
+        self.learn(conf, "It runs on OpenFrame now.", 2)
+        self.assertIn("OpenFrame", conf.dictionary_hint())
+
+    def test_an_older_file_with_bare_counts_still_reads(self):
+        conf = self.config()
+        dictionary._write([], {"OpenFrame": 2}, "")
+        added = self.learn(conf, "It runs on OpenFrame now.")
+        self.assertEqual([r["term"] for r in added], ["OpenFrame"])
+
+    def test_the_hint_puts_typed_words_first_and_stays_in_budget(self):
+        conf = self.config()
+        typed = [dictionary.entry(f"Typed{i}") for i in range(3)]
+        learned = [dictionary.entry(f"Learned{i:03d}", source="auto") for i in range(200)]
+        dictionary.store(conf, learned[:1] + typed + learned[1:], [])
+        hint = conf.dictionary_hint()
+        self.assertTrue(hint.startswith("Typed0, Typed1, Typed2, Learned000"))
+        self.assertLessEqual(len(hint), dictionary.HINT_BUDGET)
+        self.assertIn("Learned199", conf.dictionary_glossary())
+
+    def test_pending_names_go_with_learning_and_the_history(self):
+        conf = self.config()
+        self.learn(conf, "It runs on OpenFrame now.")
+        cfg.clear_history()
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertEqual(stored["pending"], {})
+        self.learn(conf, "It runs on OpenFrame now.")
+        cfg.delete_history([{"ts": "x", "text": "y"}])
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertEqual(stored["pending"], {})
 
     def test_a_command_line_edit_keeps_what_was_learned(self):
         conf = self.config(transcribe_prompt="Paraşüt")
