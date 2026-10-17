@@ -35,11 +35,12 @@ def step_script(workflow, name):
     lines = workflow.splitlines()
     start = lines.index(f"      - name: {name}")
     run = None
-    for line in lines[start + 1:]:
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
         if line.startswith("      - ") or (line.strip() and not line.startswith("        ")):
             break
         if line.startswith("        run: "):
-            run = line[len("        run: "):]
+            run, start = line[len("        run: "):], index
             break
     if run is None:
         raise AssertionError(f"step {name!r} has no run script")
@@ -47,10 +48,7 @@ def step_script(workflow, name):
         anchor = f"run: &{run[1:]} |"
         start = next(index for index, line in enumerate(lines)
                      if line.strip() == anchor)
-    elif run.endswith("|"):
-        start = lines.index(next(line for line in lines[start:]
-                                 if line.startswith("        run: ")))
-    else:
+    elif not run.endswith("|"):
         return run
     body = []
     for line in lines[start + 1:]:

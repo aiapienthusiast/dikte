@@ -55,8 +55,10 @@ permissions:
 
 # One queue per pull request, and per ref and platform choice for a dispatch,
 # so a Linux publish never waits behind a running Windows build or gets
-# replaced by a later Windows dispatch. A dispatch is never cancelled; a
-# second publish of the same tag fails on the existing tag instead.
+# replaced by a later Windows dispatch. A running dispatch is not cancelled,
+# though GitHub keeps only the newest pending one per queue. Two publishes of
+# the same tag can still race from different queues (linux and both); the
+# loser fails when it creates the tag ref, which already exists.
 concurrency:
   group: whisper-vulkan-${{ github.event.pull_request.number || github.ref }}-${{ inputs.platforms || 'pr' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
