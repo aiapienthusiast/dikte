@@ -396,6 +396,19 @@ class EdgeAndFirstParts(DikteTest):
                 self.assertEqual(profiles.propose_site(
                     f"Video - YouTube - {profile} - Microsoft Edge"), "YouTube")
 
+    def test_firefox_and_zen_profiles_are_dropped_too(self):
+        # Firefox and Zen with more than one profile put its name before
+        # their own, the way Edge does.
+        for title in ("(1) WhatsApp — Original profile — Zen Browser",
+                      "WhatsApp — Default Profile — Mozilla Firefox",
+                      "WhatsApp — Work — Mozilla Firefox"):
+            with self.subTest(title=title):
+                self.assertEqual(profiles.propose_site(title), "WhatsApp")
+        conf = self.config(profiles=[{"name": "Chat", "sites": ["WhatsApp"]}])
+        self.assertEqual(profiles.choose(
+            conf, "zen", True,
+            "(1) WhatsApp — Original profile — Zen Browser").name, "Chat")
+
     def test_edge_beta_and_more_pages(self):
         self.assertEqual(profiles.propose_site(
             "Inbox - Outlook and 3 more pages - Work - Microsoft Edge Beta"), "Outlook")
