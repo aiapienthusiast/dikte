@@ -7,6 +7,7 @@ from that version.
 """
 
 import hashlib
+from unittest import mock
 
 from dikte import config as cfg
 from dikte import profiles
@@ -241,3 +242,43 @@ class LearningStyle(DikteTest):
             "Uygun olduğunuz bir zamanda dönüş yapmanızı rica ederim. "
             "Sorularınız olursa iletişime geçebilirsiniz. Saygılarımla."])
         self.assertEqual(found.get("formality"), "formal")
+
+
+class Lookup(DikteTest):
+    """The program is asked for beside the recording, never in front of it."""
+
+    def test_nothing_to_detect_answers_at_once(self):
+        from dikte import app
+        with mock.patch.object(app.frontapp, "program_name") as asked:
+            lookup = app._ProfileLookup(self.config(), None)
+            self.assertEqual(lookup.result().name, "")
+        asked.assert_not_called()
+
+    def test_the_lookup_runs_on_its_own_thread(self):
+        import threading
+        from dikte import app
+        conf = self.config(profiles=[{"name": "Chat", "apps": ["slack"]}])
+        gate, threads = threading.Event(), []
+
+        def slow(_front):
+            threads.append(threading.current_thread())
+            gate.wait(5)
+            return "slack"
+
+        with mock.patch.object(app.frontapp, "program_name", side_effect=slow):
+            lookup = app._ProfileLookup(conf, None)
+            gate.set()
+            self.assertEqual(lookup.result().name, "Chat")
+        self.assertIsNot(threads[0], threading.main_thread())
+
+    def test_a_lookup_that_never_answers_falls_back_to_default(self):
+        import threading
+        from dikte import app
+        conf = self.config(profiles=[{"name": "Chat", "apps": ["slack"]}])
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        with mock.patch.object(app.frontapp, "program_name",
+                               side_effect=lambda _f: gate.wait(5) and "slack"), \
+                mock.patch.object(app._ProfileLookup, "WAIT", 0.05):
+            choice = app._ProfileLookup(conf, None).result()
+        self.assertEqual((choice.name, choice.program), ("", ""))

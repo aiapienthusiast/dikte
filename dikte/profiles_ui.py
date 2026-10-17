@@ -123,7 +123,7 @@ class DictionaryEditor(QWidget):
             "Names and terms you say often. They go to the transcription model "
             "as a hint, and to the cleanup model as a glossary, so it can "
             "repair the ones that still come out wrong. Every profile uses "
-            "the same dictionary.")))
+            "the same dictionary, and so do audio files and meetings.")))
 
         self.search = QLineEdit()
         self.search.setPlaceholderText(t("Search"))
@@ -168,8 +168,10 @@ class DictionaryEditor(QWidget):
             "cleaned up and finished without a warning: never meetings, files, "
             "the agent, translations, the clipboard or other programs. A name "
             "written with a capital in the middle of a sentence is added after "
-            "it has come through three dictations unchanged, marked Auto. "
-            "Nothing is sent anywhere to do this.")))
+            "it has come through three dictations unchanged, marked Auto; until "
+            "then the names being counted are kept in the dictionary file. A "
+            "learned name you delete is not learned again. Nothing is sent "
+            "anywhere to do this.")))
 
     # ---- the form ---------------------------------------------------------
 
@@ -496,8 +498,8 @@ class ProfilesEditor(QWidget):
                      "with kdotool, when it is installed. Without it, every "
                      "dictation uses the Default profile.")
         return t("The program in front is looked up when a recording starts. "
-                 "When it cannot be found out, the Default profile is used and "
-                 "the history says so.")
+                 "When it cannot be found out or no profile lists it, the Default "
+                 "profile is used, and the history names the profile and the program.")
 
     # ---- the profiles -----------------------------------------------------
 

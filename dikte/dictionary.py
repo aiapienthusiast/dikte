@@ -38,9 +38,12 @@ MANUAL, AUTO = "manual", "auto"
 # sighting is a coincidence, and a misheard word repeats less often than a real
 # name does.
 LEARN_AFTER = 3
-# Candidates still being counted. Past this the least seen are forgotten, so
-# the file cannot grow without bound from words that never come back.
+# Candidates still being counted. Past this the least seen are forgotten, the
+# oldest of them first, so the file cannot grow without bound from words that
+# never come back and a word seen for the first time still gets counted.
 PENDING_LIMIT = 200
+# Learned words the user deleted, which are not learned again.
+REJECTED_LIMIT = 500
 
 _LOCK = threading.Lock()
 
@@ -151,22 +154,32 @@ def _read_file():
     if not isinstance(data, dict):
         return None
     synced = data.get("synced")
+    rejected = data.get("rejected")
     return {
         "entries": _clean_records(data.get("entries")),
         "pending": _clean_pending(data.get("pending")),
         "synced": synced if isinstance(synced, str) else "",
+        "rejected": [x for x in rejected if isinstance(x, str)][-REJECTED_LIMIT:]
+        if isinstance(rejected, list) else [],
     }
 
 
-def _reconcile(records, text):
+def _reconcile(records, text, synced):
     """The records rebuilt from a setting edited outside the dictionary.
 
     A piece that is the hint of a record already known keeps that record, so
-    a spelling or an Auto mark survives an edit that did not touch it."""
+    a spelling or an Auto mark survives an edit that did not touch it. A
+    learned record the setting never held (learning does not write
+    config.json) is kept too: an edit to a text it was never in cannot have
+    meant to remove it."""
     known = {}
     for record in records:
         known.setdefault(hint_of(record), record)
-    return dedupe([known.get(piece) or entry(piece) for piece in split(text)])
+    rebuilt = [known.get(piece) or entry(piece) for piece in split(text)]
+    before = set(split(synced))
+    rebuilt += [r for r in records
+                if r["source"] == AUTO and hint_of(r) not in before]
+    return dedupe(rebuilt)
 
 
 def _state(conf):
@@ -176,7 +189,8 @@ def _state(conf):
     if stored is None:
         return dedupe([entry(p) for p in split(text)]), {}, False
     if text.strip() != stored["synced"].strip():
-        return _reconcile(stored["entries"], text), stored["pending"], True
+        return (_reconcile(stored["entries"], text, stored["synced"]),
+                stored["pending"], True)
     return stored["entries"], stored["pending"], True
 
 
@@ -203,13 +217,14 @@ def glossary(conf):
     return render_glossary(found)
 
 
-def _write(entries, pending, synced):
+def _write(entries, pending, synced, rejected=()):
     cfg.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     target = path()
     tmp = target.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump({"version": 1, "entries": entries, "pending": pending,
-                   "synced": synced}, fh, ensure_ascii=False, indent=2)
+                   "synced": synced, "rejected": list(rejected)[-REJECTED_LIMIT:]},
+                  fh, ensure_ascii=False, indent=2)
         fh.flush()
         os.fsync(fh.fileno())
     os.chmod(tmp, 0o600)
@@ -249,9 +264,17 @@ def write(pending):
     way save() kept what arrived before."""
     merged, loaded, text = pending
     with _LOCK:
-        stored = _read_file() or {"entries": [], "pending": {}}
+        stored = _read_file() or {"entries": [], "pending": {}, "rejected": []}
         merged = dedupe(merged + _arrived(stored["entries"], loaded))
-        _write(merged, stored["pending"], text)
+        # A learned record the user took out is remembered as refused, so the
+        # same word is not learned straight back three dictations later.
+        kept = {_key(r["term"]) for r in merged}
+        rejected = list(stored["rejected"])
+        for record in loaded:
+            key = _key(record["term"])
+            if record["source"] == AUTO and key not in kept and key not in rejected:
+                rejected.append(key)
+        _write(merged, stored["pending"], text, rejected)
         return merged
 
 
@@ -284,7 +307,8 @@ ocak şubat mart nisan mayıs haziran temmuz ağustos eylül ekim kasım aralık
 _NOUN_CAPITALS = {"de", "lb"}
 
 _WORD = re.compile(r"[^\W\d_][\w]*(?:[-.][\w]+)*", re.UNICODE)
-_SENTENCE_END = set(".!?:;\n\"“”‘«»(")
+# What can stand before the first word of a sentence, a line or a list item.
+_SENTENCE_END = set(".!?:;\n\"“”‘«»(-*•")
 
 
 def _titled(word):
@@ -309,7 +333,8 @@ def candidates(text):
         word = match.group(0)
         gap = text[previous_end:match.start()]
         previous_end = match.end()
-        before = text[:match.start()].rstrip()
+        # Spaces only: a line break is itself a start, and must survive.
+        before = text[:match.start()].rstrip(" \t")
         starts = not before or before[-1] in _SENTENCE_END
         # A Turkish suffix hangs off a name after an apostrophe (Yusuf'un), and
         # the word pattern stops at the apostrophe, so the name arrives bare and
@@ -343,7 +368,9 @@ def learn(conf, raw, text, speech_language=""):
         return []
     with _LOCK:
         current, pending, exists = _state(conf)
-        known = set()
+        stored = _read_file()
+        rejected = stored["rejected"] if stored else []
+        known = set(rejected)
         for record in current:
             known.add(_key(record["term"]))
             known.add(_key(hint_of(record)))
@@ -361,11 +388,14 @@ def learn(conf, raw, text, speech_language=""):
             else:
                 pending[term] = count
         if len(pending) > PENDING_LIMIT:
-            keep = sorted(pending.items(), key=lambda item: -item[1])[:PENDING_LIMIT]
-            pending = dict(keep)
+            # Newest first into a stable sort: among equal counts the words
+            # seen last are the ones kept.
+            newest = list(pending.items())[::-1]
+            keep = sorted(newest, key=lambda item: -item[1])[:PENDING_LIMIT]
+            pending = dict(reversed(keep))
         # The setting is left as it is: this thread does not write config.json.
         # The file says which text it agrees with, so the two stay in step.
         text_now = conf["transcribe_prompt"] if isinstance(
             conf["transcribe_prompt"], str) else ""
-        _write(current, pending, text_now)
+        _write(current, pending, text_now, rejected)
         return added

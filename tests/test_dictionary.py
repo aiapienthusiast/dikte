@@ -155,6 +155,34 @@ class Learning(DikteTest):
         conf = self.config(transcribe_prompt="openframe")
         self.assertEqual(self.learn(conf, "It runs on OpenFrame now.", 3), [])
 
+    def test_a_new_line_or_a_list_item_starts_a_sentence(self):
+        self.assertEqual(dictionary.candidates("Notes\nCall Mom\n- Fix the build"),
+                         ["Mom"])
+
+    def test_a_full_count_still_counts_a_new_word(self):
+        conf = self.config()
+        dictionary._write([], {f"Word{i}": 1 for i in range(dictionary.PENDING_LIMIT)},
+                          "")
+        self.learn(conf, "It runs on OpenFrame now.")
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertIn("OpenFrame", stored["pending"])
+        self.assertEqual(len(stored["pending"]), dictionary.PENDING_LIMIT)
+
+    def test_a_command_line_edit_keeps_what_was_learned(self):
+        conf = self.config(transcribe_prompt="Paraşüt")
+        self.learn(conf, "It runs on OpenFrame now.", 3)
+        conf["transcribe_prompt"] = "Paraşüt, Grafana"
+        self.assertEqual([r["term"] for r in dictionary.records(conf)],
+                         ["Paraşüt", "Grafana", "OpenFrame"])
+
+    def test_a_deleted_learned_word_is_not_learned_again(self):
+        conf = self.config()
+        self.learn(conf, "It runs on OpenFrame now.", 3)
+        loaded = dictionary.records(conf)
+        dictionary.store(conf, dictionary.clear_auto(loaded), loaded)
+        self.assertEqual(self.learn(conf, "It runs on OpenFrame now.", 3), [])
+        self.assertEqual(dictionary.records(conf), [])
+
     def test_learning_leaves_config_json_alone(self):
         """It runs on the dictation thread; the settings file is not its to
         write, and the dictionary file keeps the two in step."""

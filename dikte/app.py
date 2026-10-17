@@ -119,6 +119,48 @@ class UpdateCheck(QObject):
         threading.Thread(target=work, daemon=True).start()
 
 
+class _ProfileLookup:
+    """The profile for one recording, worked out beside it."""
+
+    # Longer than every timeout frontapp allows put together, and still well
+    # under the shortest recording anybody stops on purpose.
+    WAIT = 3.0
+
+    def __init__(self, conf, front):
+        self._conf = conf
+        self._front = front
+        self._choice = None
+        self._thread = None
+        try:
+            detect = profiles.wants_detection(conf)
+        except Exception:
+            detect = False
+        if detect:
+            self._thread = threading.Thread(target=self._look, daemon=True)
+            self._thread.start()
+        else:
+            self._choose("")
+
+    def _choose(self, program):
+        try:
+            self._choice = profiles.choose(self._conf, program)
+        except Exception as exc:  # a profile is never worth a dictation
+            print(f"dikte: could not choose a profile: {exc}", file=sys.stderr)
+
+    def _look(self):
+        self._choose(frontapp.program_name(self._front))
+
+    def result(self):
+        if self._thread is not None:
+            self._thread.join(self.WAIT)
+            if self._thread.is_alive():
+                # Still asking: the Default profile, said so in the history
+                # like any other program that could not be found out.
+                self._thread = None
+                self._choose("")
+        return self._choice
+
+
 class Dikte:
     def __init__(self, app):
         self.app = app
@@ -757,20 +799,19 @@ class Dikte:
         return mac_window.frontmost_pid() if sys.platform == "darwin" else None
 
     def _the_profile(self, front):
-        """The writing profile for a dictation about to start, as a snapshot.
+        """The writing profile for a dictation about to start, as a lookup
+        whose result() is the snapshot.
 
-        Asked at the same moment as _the_front and for the same reason: once
-        the indicator is up, the program in front may be Dikte. The program is
-        only looked for when the answer could change the profile, since on
-        Linux the looking is a subprocess paid for on the key press.
+        Started at the same moment as _the_front. The looking itself runs on
+        a thread of its own, since on Linux it is up to three subprocesses and
+        the microphone must not wait for them: the first words would be lost.
+        Letting it finish after the indicator is up is safe, because the
+        indicator never takes the focus (it is a tool window that accepts
+        none), and on macOS the answer is read from the process id taken
+        before it appeared. Only looked for at all when the answer could
+        change the profile.
         """
-        try:
-            program = (frontapp.program_name(front)
-                       if profiles.wants_detection(self.conf) else "")
-            return profiles.choose(self.conf, program)
-        except Exception as exc:  # a profile is never worth a dictation
-            print(f"dikte: could not choose a profile: {exc}", file=sys.stderr)
-            return None
+        return _ProfileLookup(self.conf, front)
 
     def start(self):
         # Only a held microphone blocks: a previous dictation still being
@@ -1156,8 +1197,9 @@ class Dikte:
         owner, self.recorder_owner = self.recorder_owner, None
         wants_paste = self.paste_override.pop(owner, None)
         focus, self.front_before = self.front_before, None
-        profile = getattr(self, "profile_before", None)
+        lookup = getattr(self, "profile_before", None)
         self.profile_before = None
+        profile = lookup.result() if lookup is not None else None
         if owner == ASK:
             self.ask_pipeline.run(wav_path, duration, rms_values, ask=True,
                                   paste=wants_paste, focus=focus)

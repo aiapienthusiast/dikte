@@ -670,7 +670,8 @@ def cmd_prompt(opts):
     """The prompt a run would really use, defaults and glossary folded in."""
     conf = cfg.Config()
     prompts = {
-        # As a dictation under the Default profile would send it.
+        # As a dictation would send it with no program found in front: the
+        # Default profile, or the one chosen for every dictation.
         "cleanup": conf.cleanup_prompt(profile=profiles.choose(conf)),
         "subtitles": conf.cleanup_prompt(subtitles=True),
         "meeting": conf.meeting_prompt(),

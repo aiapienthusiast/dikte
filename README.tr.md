@@ -183,9 +183,8 @@ olmasını ister.
   benzer bir şeye kayıyor; temizleme modelinden bunları bağlamdan onarması,
   bağlam netleştirmiyorsa dokunmaması isteniyor. Temizleme kuralları sekmesine
   yazdığın isimler transkripsiyon modeline ipucu, temizleme modeline sözlük
-  olarak gidiyor ve programa göre üslup seçen ya da sonucu çeviren yazım
-  profillerinin hepsi aynı sözlüğü kullanıyor; "kuber netis"i tanımasını
-  sağlayan da bu:
+  olarak gidiyor; "kuber netis"i tanımasını sağlayan da bu (programa göre üslup
+  seçen ya da sonucu çeviren yazım profillerinin hepsi aynı sözlüğü kullanıyor):
 
   ```
   ham    ıı bugün şey kuber netis üzerinde çalışan servisleri güncelledim

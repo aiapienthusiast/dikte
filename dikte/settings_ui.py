@@ -976,6 +976,8 @@ def history_marks(row):
     marks = ""
     if "profile" in row:
         marks += t("  ·  profile: {name}", name=row.get("profile") or t("Default"))
+        marks += (t(" ({program})", program=row["program"]) if row.get("program")
+                  else t(" (program unknown)"))
     code = row.get("translate_to")
     if code:
         language = t(profiles.language_name(code))
