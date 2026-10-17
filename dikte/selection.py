@@ -137,7 +137,9 @@ _META_TARGETS = {"TARGETS", "TIMESTAMP", "MULTIPLE", "SAVE_TARGETS", "DELETE",
 # these is never flattened to text, whatever text form comes beside it.
 _BLOCKING_PREFIXES = ("image/", "video/", "audio/", "x-special/")
 _BLOCKING = {"application/x-qt-image", "application/x-kde4-urilist",
-             "application/x-kde-cutselection", "PIXMAP", "BITMAP"}
+             "application/x-kde-cutselection", "application/vnd.portal.files",
+             "application/vnd.portal.filetransfer", "application/x-moz-file",
+             "application/x-moz-file-promise", "FILE_NAME", "PIXMAP", "BITMAP"}
 WAYLAND_TYPES = ["wl-paste", "--list-types"]
 X11_TARGETS = ["xclip", "-selection", "clipboard", "-out", "-target", "TARGETS"]
 
@@ -173,7 +175,8 @@ def _linux_clipboard_kind(here):
     a browser or an office suite offers beside it (HTML, a GTK text buffer,
     an OpenDocument fragment, a link's uri-list). A file manager's copy, a
     copied image and the like are never flattened. An offer of meta targets
-    alone is an empty clipboard.
+    alone is 'other': something owns the clipboard, and what it holds is not
+    known, so it is left alone.
 
     KDE marks a copied password with x-kde-passwordManagerHint. That form is
     dropped like any other extra, so a restore puts the password back as
@@ -200,7 +203,7 @@ def _linux_clipboard_kind(here):
         return "empty" if empty else "unknown"
     content = [name for name in types if name not in _META_TARGETS]
     if not content:
-        return "empty"
+        return "other"
     if any(name in _BLOCKING or name.startswith(_BLOCKING_PREFIXES)
            for name in content):
         return "other"
@@ -212,16 +215,17 @@ def _linux_clipboard_kind(here):
     return "other"
 
 
-def snapshot_patiently():
+def snapshot_patiently(cancelled=None):
     """snapshot(), asked again a few times while the clipboard is busy.
 
     Another program holding the clipboard for a moment, or a listing that
     timed out, is worth a few short tries; a missing tool or non-text content
-    is not.
+    is not, and neither is a run that has been called off.
     """
     saved = snapshot()
     for _ in range(SNAPSHOT_TRIES - 1):
-        if saved is not UNAVAILABLE:
+        if saved is not UNAVAILABLE or (cancelled is not None
+                                        and cancelled.is_set()):
             break
         time.sleep(0.1)
         saved = snapshot()
@@ -284,7 +288,7 @@ def copy_selection(focus=None, cancelled=None):
     A clipboard that cannot be read back is not touched at all: the run then
     goes ahead as if nothing were selected.
     """
-    saved = snapshot_patiently()
+    saved = snapshot_patiently(cancelled)
     if saved in UNREADABLE:
         return ""
     try:

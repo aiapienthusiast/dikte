@@ -341,8 +341,12 @@ class LinuxClipboard(DikteTest):
             b"text/uri-list\n": "other",
             # A Qt application's image.
             b"application/x-qt-image\nimage/png\n": "other",
-            # Meta targets alone describe nothing: empty.
-            b"TARGETS\nTIMESTAMP\n": "empty",
+            # Meta targets alone: owned, contents unknown, left alone.
+            b"TARGETS\nTIMESTAMP\nSAVE_TARGETS\n": "other",
+            # File lists from the desktop portal and Firefox.
+            b"application/vnd.portal.files\ntext/plain\n": "other",
+            b"application/vnd.portal.filetransfer\ntext/plain\n": "other",
+            b"application/x-moz-file\ntext/plain\n": "other",
         }
         for offer, expected in cases.items():
             with self.subTest(offer=offer):
@@ -483,6 +487,23 @@ class Apply(DikteTest):
         self.assertEqual(snap.call_count, 2)
         self.calls.copy_bytes.assert_called_once_with(b"before")
 
+    def test_a_cancelled_run_stops_asking_a_busy_clipboard(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with mock.patch.object(selection, "snapshot",
+                               return_value=selection.UNAVAILABLE) as snap:
+            self.assertIs(selection.snapshot_patiently(cancelled),
+                          selection.UNAVAILABLE)
+        self.assertEqual(snap.call_count, 1)
+
+    def test_the_selection_copy_passes_its_cancel_on(self):
+        cancelled = threading.Event()
+        with mock.patch.object(selection, "snapshot_patiently",
+                               return_value=selection.UNAVAILABLE) as patient:
+            self.assertEqual(selection.copy_selection(None, cancelled), "")
+        patient.assert_called_once_with(cancelled)
+        self.calls.press.assert_not_called()
+
     def test_a_clipboard_that_frees_up_is_used(self):
         with mock.patch.object(selection, "snapshot", side_effect=[
                 selection.UNAVAILABLE, selection.UNAVAILABLE, b"before"]):
@@ -499,9 +520,13 @@ class Apply(DikteTest):
 
 class Window(DikteTest):
     def make(self, **kwargs):
+        # A bridge of its own per window, so nothing connected here outlives
+        # the test on the application-wide one.
+        bridge = answer_window.AnswerBridge()
+        self.addCleanup(bridge.deleteLater)
         defaults = dict(instruction="shorten it", answer="Short.",
                         selected="A long sentence.", can_apply=True,
-                        apply_fn=mock.Mock(), agent="Claude")
+                        apply_fn=mock.Mock(), agent="Claude", bridge=bridge)
         defaults.update(kwargs)
         window = answer_window.AnswerWindow(**defaults)
         self.addCleanup(window.deleteLater)
@@ -587,7 +612,7 @@ class Window(DikteTest):
             lock.acquire()
             try:
                 window.copy_button.click()   # returns although the lock is held
-                self.assertTrue(window.busy)
+                self.assertTrue(window._copy_thread.is_alive())
                 copy.assert_not_called()
             finally:
                 lock.release()

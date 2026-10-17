@@ -150,12 +150,6 @@ class AnswerWindow(QDialog):
     def can_apply(self):
         return self.apply_button.isVisibleTo(self)
 
-    @property
-    def busy(self):
-        """Whether an Apply or a Copy is still running for this window."""
-        return any(thread is not None and thread.is_alive()
-                   for thread in (self._thread, self._copy_thread))
-
     def text(self):
         return self.answer.toPlainText()
 
