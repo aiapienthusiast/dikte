@@ -389,8 +389,8 @@ def forget_pending(texts=None):
             rows = [_joined(_tokens(t)) for t in texts if isinstance(t, str)]
             pending = {}
             for term, value in stored["pending"].items():
-                needle = _joined(_tokens(term))
-                if needle == _SEP or not any(needle in row for row in rows):
+                words = _tokens(term)
+                if not words or not any(_joined(words) in row for row in rows):
                     pending[term] = value
             if len(pending) == len(stored["pending"]):
                 return

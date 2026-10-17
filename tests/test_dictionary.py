@@ -201,6 +201,13 @@ class Learning(DikteTest):
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
         self.assertEqual(sorted(stored["pending"]), ["Ali", "Grafana"])
 
+    def test_a_term_without_words_is_never_matched_by_a_wordless_row(self):
+        self.config()
+        dictionary._write([], {"123": [1, 1], "Grafana": [1, 1]}, "")
+        cfg.delete_history([{"raw": "42", "text": "Grafana"}])
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertEqual(sorted(stored["pending"]), ["123"])
+
     def test_fold_is_public_and_folds_turkish_capitals(self):
         self.assertEqual(dictionary.fold("İstanbul"), dictionary.fold("istanbul"))
 
