@@ -175,14 +175,18 @@ class Learning(DikteTest):
         # Seen again, it is already known.
         self.assertEqual(self.learn(conf, text, times=3), [])
 
-    def test_a_word_the_cleanup_put_in_is_not_learned_as_a_name(self):
-        """Not a name heard as itself: what is learned is the correction, with
-        what the transcriber heard beside it."""
+    def test_an_everyday_word_put_right_is_not_learned(self):
+        """"cloud" made "Claude" is a fix for that sentence; learned, it would
+        push every cloud towards Claude. Neither the name nor the correction."""
         conf = self.config()
         added = self.learn(conf, "I asked Claude about it.", times=3,
                            raw="I asked cloud about it.")
-        self.assertEqual([(r["term"], r["spelling"]) for r in added],
-                         [("cloud", "Claude")])
+        self.assertEqual(added, [])
+        self.assertEqual(dictionary.corrections("bulut sistemine yükledim",
+                                                "Bulut sistemine yükledim."), [])
+        # A heard word that is not everyday still counts.
+        self.assertEqual(dictionary.corrections("we tried klod code", "We tried Claude Code."),
+                         [("klod", "Claude")])
 
     def test_german_capitals_say_nothing(self):
         conf = self.config()

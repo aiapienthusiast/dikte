@@ -522,6 +522,63 @@ def candidates(text):
 # to the other. Only a swap of a few words for a name or a term counts; the
 # grammar, the punctuation and the filler the cleanup also changes do not.
 
+# Everyday words, a few hundred of the most frequent in English and in
+# Turkish. A correction whose heard side is nothing but these is the cleanup
+# putting a name where an ordinary word was said: "cloud" made "Claude" once
+# is right, but learned, every "cloud" would be pushed towards "Claude".
+EVERYDAY = frozenset(fold(w) for w in """
+a about above after again against all almost alone along already also always
+am among an and another any anything are around as ask at away back bad be
+because been before being below best better between big black blue body book
+both box boy bring but buy by call came can car card care case cat change
+child city clean clear close cloud cold come could country course cut dark
+day dead dear did different do does dog done door down draw dream drive drop
+dry during each early earth easy eat end enough even evening ever every eye
+face fact fall family far fast father feel few field fill find fine fire
+first fish five floor fly follow food for form found four free friend from
+front full game gave get girl give glass go gold gone good got great green
+ground group grow had half hand hard has have he head hear heart help her
+here high him his hold home hope horse hot hour house how i idea if in into
+is it its just keep key kind king know land large last late later learn
+leave left less let letter life light like line list little live long look
+lot love low made make man many map may me mean men might mind miss money
+month more morning most mother move much music must my name near need never
+new news next nice night no not note nothing now number of off often old on
+once one only open or order other our out over own page paper park part pass
+past pay people pick piece place plan play point poor power put question
+quick rain read ready real red rest right river road rock room run said same
+saw say school sea second see seem send set she ship short should show side
+sign simple since sing sit six size sleep slow small snow so some something
+song soon sound speak stand star start stay still stop story street strong
+such sun sure table take talk tell ten than that the their them then there
+these they thing think this those though three through time to today
+together told too took top town tree true try turn two under until up us
+use very voice wait walk wall want war warm was watch water way we week well
+went were what when where which while white who why will wind window with
+word work world would write year yes yet you young your
+
+ve ile ama fakat çünkü veya ya da de da ki mi mı mu mü bu şu o bir iki üç
+dört beş altı yedi sekiz dokuz on yüz bin ben sen biz siz onlar bana sana ona
+bize size benim senin onun bizim sizin var yok evet hayır çok az daha en her
+hiç bazı tüm bütün hep şimdi sonra önce bugün yarın dün akşam sabah gece
+gün hafta ay yıl saat zaman yer ev iş okul yol su ekmek çay kahve yemek
+araba kapı pencere masa sandalye kitap kalem kağıt telefon bilgisayar para
+anne baba kardeş çocuk adam kadın arkadaş insan dünya şehir köy ülke deniz
+dağ ağaç çiçek hava güneş yağmur kar rüzgar bulut ateş toprak taş büyük küçük
+iyi kötü güzel çirkin yeni eski uzun kısa sıcak soğuk hızlı yavaş kolay zor
+doğru yanlış açık kapalı tam boş dolu siyah beyaz kırmızı mavi yeşil sarı gel
+git gelmek gitmek yap yapmak et etmek ol olmak al almak ver vermek bak bakmak
+gör görmek bil bilmek söyle söylemek konuş konuşmak yaz yazmak oku okumak
+dinle dinlemek iste istemek sev sevmek bekle beklemek başla başlamak bitir
+bitirmek aç kapat çalış çalışmak dur durmak otur oturmak kalk kalkmak koş
+yürü düşün düşünmek anla anlamak sor sormak cevap soru sorun şey neden niye
+nasıl nerede ne kim hangi kaç kadar gibi için göre kadar sadece yine artık
+belki galiba herhalde tabii elbette lütfen teşekkür merhaba selam tamam peki
+hani yani işte şöyle böyle öyle burada orada şurada içinde dışında üstünde
+altında yanında karşı arka ön sağ sol yukarı aşağı ilk son orta yarım çeyrek
+sayfa dosya mesaj haber konu fikir plan proje toplantı rapor liste not
+""".split())
+
 # How a correction waits among the pending names: "heard -> spelling".
 PAIR = " -> "
 # Words on either side of a correction, at most.
@@ -594,6 +651,8 @@ def corrections(raw, text, known=()):
                 and _key(" ".join(after)) not in known:
             continue
         if not _termlike(after, known) or any(_key(w) in COMMON for w in after):
+            continue
+        if all(_key(w) in EVERYDAY for w in before):
             continue
         plain_before, plain_after = _plain(" ".join(before)), _plain(" ".join(after))
         if plain_before == plain_after:
