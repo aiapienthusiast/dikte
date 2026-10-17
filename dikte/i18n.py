@@ -1206,6 +1206,10 @@ TR = {
     "nothing was pasted. Use Copy instead.":
         "Panoda bir resim ya da dosya var ve yapıştırmak onu kaybettirirdi, bu "
         "yüzden hiçbir şey yapıştırılmadı. Bunun yerine kopyalamayı kullan.",
+    "{tool} is needed to check the clipboard, so nothing was pasted. Install "
+    "it, or use Copy.":
+        "Panoyu denetlemek için {tool} gerekiyor, bu yüzden hiçbir şey "
+        "yapıştırılmadı. Kur ya da kopyalamayı kullan.",
     "The clipboard could not be read just now, so nothing was pasted. Try "
     "again, or use Copy.":
         "Pano şu an okunamadı, bu yüzden hiçbir şey yapıştırılmadı. Yeniden "

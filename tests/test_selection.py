@@ -16,7 +16,7 @@ import types
 import unittest
 from unittest import mock
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
@@ -101,6 +101,8 @@ class Capture(DikteTest):
         self.patch_attr(selection, "_win_let_go_of_modifiers", self.calls.let_go)
         self.patch_attr(selection, "_win_clipboard_empty", self.calls.win_empty)
         self.calls.win_empty.return_value = False
+        # Linux asks for the clipboard's types first; never the real one.
+        self.patch_attr(selection, "_linux_clipboard_kind", lambda here: "text")
 
     def capture(self, desktop, primary=None, ready=True, focus=None):
         with mock.patch.object(paste, "desktop", return_value=desktop), \
@@ -286,7 +288,7 @@ class LinuxClipboard(DikteTest):
 
     def test_no_tool_is_left_alone(self):
         kind, run = self.kind(paste.WAYLAND, completed(), tools=())
-        self.assertEqual(kind, "unknown")
+        self.assertEqual(kind, "missing")
         run.assert_not_called()
 
     def snap(self, kind, clipboard=b"old"):
@@ -322,14 +324,25 @@ class LinuxClipboard(DikteTest):
             b"text/x-moz-url-priv\n": "text",
             b"TARGETS\nTIMESTAMP\nSAVE_TARGETS\ntext/html\ntext/plain\n"
             b"chromium/x-source-url\n": "text",
+            # GTK, LibreOffice and Qt text copies, with their rich extras.
+            b"GTK_TEXT_BUFFER_CONTENTS\napplication/x-gtk-text-buffer-rich-text\n"
+            b"UTF8_STRING\ntext/plain;charset=utf-8\n": "text",
+            b"application/x-openoffice-embed-source-xml;windows_formatname=x\n"
+            b"application/vnd.oasis.opendocument.text\ntext/html\n"
+            b"text/plain;charset=utf-8\n": "text",
+            b"application/x-qt-richtext\ntext/html\ntext/plain\n": "text",
+            # Firefox "Copy Link": the URL survives as text.
+            b"text/x-moz-url\ntext/uri-list\ntext/plain\n": "text",
             # Firefox "Copy Image": an image beside a text form of it.
             b"text/html\nimage/png\ntext/plain\n": "other",
-            # A file manager's copy.
+            # File manager copies, GNOME's and KDE's.
             b"text/uri-list\nx-special/gnome-copied-files\ntext/plain\n": "other",
+            b"text/uri-list\napplication/x-kde4-urilist\ntext/plain\n": "other",
             b"text/uri-list\n": "other",
             # A Qt application's image.
             b"application/x-qt-image\nimage/png\n": "other",
-            b"TARGETS\nTIMESTAMP\n": "other",
+            # Meta targets alone describe nothing: empty.
+            b"TARGETS\nTIMESTAMP\n": "empty",
         }
         for offer, expected in cases.items():
             with self.subTest(offer=offer):
@@ -421,6 +434,7 @@ class Apply(DikteTest):
         self.calls.read_clipboard.return_value = b"before"
         for name in ("read_clipboard", "copy", "copy_bytes", "press"):
             self.patch_attr(paste, name, getattr(self.calls, name))
+        self.patch_attr(selection, "_linux_clipboard_kind", lambda here: "text")
 
     def test_apply_pastes_then_restores(self):
         selection.apply("New text.", self.conf, focus=9)
@@ -447,8 +461,27 @@ class Apply(DikteTest):
             with self.assertRaises(paste.PasteError) as caught:
                 selection.apply("New text.", self.conf)
         self.assertIn("could not be read just now", str(caught.exception))
-        self.assertEqual(snap.call_count, selection.APPLY_TRIES)
+        self.assertEqual(snap.call_count, selection.SNAPSHOT_TRIES)
         self.calls.copy.assert_not_called()
+
+    def test_a_missing_listing_tool_is_said_and_not_retried(self):
+        with mock.patch.object(selection, "snapshot",
+                               return_value=selection.MISSING) as snap, \
+                mock.patch.object(paste, "desktop", return_value=paste.WAYLAND):
+            with self.assertRaises(paste.PasteError) as caught:
+                selection.apply("New text.", self.conf)
+        self.assertIn("wl-paste is needed", str(caught.exception))
+        self.assertEqual(snap.call_count, 1)
+        self.calls.copy.assert_not_called()
+
+    def test_the_selection_copy_waits_out_a_busy_clipboard_too(self):
+        with mock.patch.object(paste, "desktop", return_value=paste.MACOS), \
+                mock.patch.object(paste, "read_text", return_value="sel"), \
+                mock.patch.object(selection, "snapshot", side_effect=[
+                    selection.UNAVAILABLE, b"before"]) as snap:
+            self.assertEqual(selection.copy_selection(), "sel")
+        self.assertEqual(snap.call_count, 2)
+        self.calls.copy_bytes.assert_called_once_with(b"before")
 
     def test_a_clipboard_that_frees_up_is_used(self):
         with mock.patch.object(selection, "snapshot", side_effect=[
@@ -520,15 +553,31 @@ class Window(DikteTest):
         window.apply()   # even called directly, it does nothing
         self.assertIsNone(window._thread)
 
-    def test_a_failed_apply_is_reported(self):
+    def test_a_failed_apply_is_reported_on_the_bridge(self):
         window, _ = self.make(apply_fn=mock.Mock(side_effect=paste.PasteError("nope")))
         failures = []
-        window.apply_failed.connect(failures.append)
+        window.bridge.apply_finished.connect(
+            lambda token, error: failures.append((token, error)))
         window.apply()
         window._thread.join(2)
         QApplication.processEvents()
-        self.assertEqual(len(failures), 1)
-        self.assertIn("nope", failures[0])
+        self.assertEqual(failures, [(window.token, "nope")])
+
+    def test_the_threads_never_hold_the_window(self):
+        window, _ = self.make()
+        with mock.patch.object(paste, "copy"), \
+                mock.patch.object(answer_window.threading, "Thread",
+                                  wraps=threading.Thread) as made:
+            window.apply()
+            window.copy()
+            for thread in (window._thread, window._copy_thread):
+                thread.join(2)
+        self.assertEqual(made.call_count, 2)
+        for call in made.call_args_list:
+            self.assertNotIsInstance(getattr(call.kwargs["target"], "__self__", None),
+                                     answer_window.AnswerWindow)
+            self.assertFalse(any(isinstance(arg, answer_window.AnswerWindow)
+                                 for arg in call.kwargs["args"]))
 
     def test_copy_does_not_wait_on_the_paste_lock_in_the_interface(self):
         """A dictation holding the lock must not freeze the window."""
@@ -568,14 +617,14 @@ class Window(DikteTest):
             first.join(2)
         copy.assert_called_once()
 
-    def test_a_stale_window_is_not_brought_back(self):
-        window, _ = self.make(apply_fn=mock.Mock(side_effect=paste.PasteError("no")))
+    def test_another_windows_result_is_not_taken_for_this_one(self):
+        window, _ = self.make()
         window.show()
-        window.stale = True
-        window.apply()
-        window._thread.join(2)
-        QApplication.processEvents()
+        window.accept()
+        window.bridge.apply_finished.emit(window.token + 1000, "someone else's")
+        window.bridge.copy_finished.emit(window.token + 1000, "")
         self.assertFalse(window.isVisible())
+        self.assertEqual(window.copy_button.text(), "Copy")
 
     def test_a_failed_apply_brings_the_answer_back(self):
         window, _ = self.make(apply_fn=mock.Mock(side_effect=paste.PasteError("no")))
@@ -697,7 +746,10 @@ class App(DikteTest):
         target.front_before = None
         target.assist_grab = None
         target.answer_window = None
-        target._retired_answers = []
+        target.answer_bridge = answer_window.AnswerBridge()
+        self.addCleanup(target.answer_bridge.deleteLater)
+        target.answer_bridge.apply_finished.connect(
+            lambda token, error: app.Dikte._on_answer_applied(target, token, error))
         target.paste_override = {}
         target.last_toggle = {}
         target._waiters = {}
@@ -808,8 +860,7 @@ class App(DikteTest):
                 self.assertEqual(target.assist_grab.result(), selection.NOTHING)
                 self.assertEqual(target.ask_state, app.RECORDING)
 
-    def test_a_replaced_window_still_reports_its_apply(self):
-        """Closed and dropped by the app, its thread still holds it."""
+    def test_a_replaced_window_is_deleted_and_its_late_failure_still_reported(self):
         release = threading.Event()
 
         def slow(text):
@@ -823,38 +874,34 @@ class App(DikteTest):
                    "selection": "s", "warning": "", "focus": None}
         with mock.patch.object(app, "_present"), \
                 mock.patch.object(paste, "paste_ready", return_value=True), \
-                mock.patch.object(selection, "apply", side_effect=lambda *a, **k: slow(a[0])):
+                mock.patch.object(selection, "apply",
+                                  side_effect=lambda *a, **k: slow(a[0])):
             app.Dikte._show_answer(target, payload, "Claude")
             first = target.answer_window
             first.apply()
-            app.Dikte._show_answer(target, payload, "Claude")
-            self.addCleanup(target.answer_window.deleteLater)
             thread = first._thread
+            destroyed = []
+            first.destroyed.connect(lambda: destroyed.append(True))
+            app.Dikte._show_answer(target, payload, "Claude")
+            second = target.answer_window
+            self.addCleanup(second.deleteLater)
             del first
+            # Deleted on this thread straight away, while its Apply still runs.
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+            self.assertEqual(destroyed, [True])
+            self.assertTrue(thread.is_alive())
             release.set()
             thread.join(2)
         QApplication.processEvents()
         target._report.assert_called_once()
         self.assertIn("late", target._report.call_args.args[0])
-        # Let go of on this thread, now that its work is over.
-        self.assertEqual(target._retired_answers, [])
+        self.assertFalse(second.isVisible())   # nothing reopened in its place
 
-    def test_a_busy_replaced_window_is_kept_and_marked_stale(self):
+    def test_a_successful_apply_reports_nothing(self):
         target = self.controller(True)
-        target._retired_answers = []
-        old = mock.Mock(busy=True, stale=False)
-        target.answer_window = old
-        payload = {"instruction": "q", "text": "a", "kind": selection.ANSWER,
-                   "selection": "", "warning": "", "focus": None}
-        with mock.patch.object(app, "_present"):
-            app.Dikte._show_answer(target, payload, "Claude")
-        self.addCleanup(target.answer_window.deleteLater)
-        self.assertTrue(old.stale)
-        old.close.assert_called_once_with()
-        self.assertEqual(target._retired_answers, [old])
-        old.join.return_value = True
-        app.Dikte._release_answers(target)
-        self.assertEqual(target._retired_answers, [])
+        target._report = mock.Mock()
+        target.answer_bridge.apply_finished.emit(1, "")
+        target._report.assert_not_called()
 
     def test_a_discarded_question_cancels_its_copy(self):
         target = self.controller(True)

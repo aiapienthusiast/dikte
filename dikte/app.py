@@ -60,6 +60,7 @@ from . import trayicon  # noqa: E402
 from . import update  # noqa: E402
 from .i18n import t  # noqa: E402
 from .meeting import MeetingPipeline  # noqa: E402
+from . import answer_window  # noqa: E402
 from .answer_window import AnswerWindow  # noqa: E402
 from .overlay import Overlay, active_screen  # noqa: E402
 from .settings_ui import SettingsWindow  # noqa: E402
@@ -180,11 +181,11 @@ class Dikte:
         # key press and the window its answer is shown in.
         self.assist_grab = None
         self.answer_window = None
-        # Replaced answer windows whose Apply or Copy is still running. Their
-        # threads hold them too, and a thread dropping the last reference would
-        # destroy a Qt window off the interface thread, so they are kept here
-        # and let go of on this thread once the work is over.
-        self._retired_answers = []
+        # Where answer windows' Apply and Copy threads report, by token. It
+        # outlives every window, so a window can be deleted the moment it is
+        # replaced, and a late failure still has somewhere to be said.
+        self.answer_bridge = answer_window.shared_bridge()
+        self.answer_bridge.apply_finished.connect(self._on_answer_applied)
 
         self.overlay = Overlay(self.conf["overlay_corner"],
                                screen_name=self.conf["overlay_screen"],
@@ -1334,10 +1335,10 @@ class Dikte:
     def _show_answer(self, payload, agent):
         old = getattr(self, "answer_window", None)
         if old is not None:
-            old.stale = True
+            # Its threads hold the bridge and a token, not the window, so it
+            # can go now; whatever they report later reaches only the app.
             old.close()
-            if old.busy:
-                self._retired_answers = getattr(self, "_retired_answers", []) + [old]
+            old.deleteLater()
         focus = payload.get("focus")
         selected = payload.get("selection") or ""
         # Apply is for an edit of something that was selected, on a desktop
@@ -1349,22 +1350,15 @@ class Dikte:
             payload.get("instruction", ""), payload.get("text", ""),
             selected=selected, can_apply=can_apply, agent=agent,
             apply_fn=lambda text: selection.apply(text, self.conf, focus=focus),
+            bridge=self.answer_bridge,
         )
-        window.apply_failed.connect(
-            lambda message: self._report(message, self.ask_overlay))
-        window.work_done.connect(self._release_answers)
         self.answer_window = window
         _present(window)
 
-    def _release_answers(self):
-        """Let go of retired answer windows whose work has ended.
-
-        Runs on the interface thread, queued behind the signal a worker sends
-        as its last act, so the join below waits a moment at most.
-        """
-        self._retired_answers = [window for window in
-                                 getattr(self, "_retired_answers", [])
-                                 if not window.join(timeout=1.0)]
+    def _on_answer_applied(self, _token, error):
+        """An Apply finished, for the current window or one long replaced."""
+        if error:
+            self._report(error, self.ask_overlay)
 
     def _on_ask_cancelled(self):
         self.cues.play("failed")

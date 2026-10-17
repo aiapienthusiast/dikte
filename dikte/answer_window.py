@@ -8,9 +8,10 @@ Nothing is pasted until Apply is pressed.
 """
 
 import html
+import itertools
 import threading
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
                              QPushButton, QVBoxLayout)
 
@@ -35,27 +36,70 @@ def _one_line(text, limit=90):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-class AnswerWindow(QDialog):
-    # Carried out on a thread of its own; this is how a failure comes back.
-    apply_failed = pyqtSignal(str)
-    # The outcome of Copy, off the interface thread: '' or the error.
-    copy_done = pyqtSignal(str)
-    # The last thing an Apply or Copy thread does, so whoever keeps a closed
-    # window alive knows when it may let go of it.
-    work_done = pyqtSignal()
+class AnswerBridge(QObject):
+    """Where Apply and Copy threads report, by token, never by window.
 
+    One for the life of the application, made on the interface thread. A
+    thread holds this and a number, not the window: a window can then be
+    closed and deleted the moment a newer answer replaces it, always on the
+    interface thread, and a result arriving for it afterwards finds nobody
+    listening under that token and goes to whoever reports errors instead.
+    """
+
+    apply_finished = pyqtSignal(int, str)   # token, error or ''
+    copy_finished = pyqtSignal(int, str)
+
+
+_shared = None
+
+
+def shared_bridge():
+    """The application's bridge, made on first use (on the interface thread)."""
+    global _shared
+    if _shared is None:
+        _shared = AnswerBridge()
+    return _shared
+
+
+_tokens = itertools.count(1)
+
+
+def _apply_in_background(bridge, token, apply_fn, text):
+    try:
+        apply_fn(text)
+    except paste.PasteError as exc:
+        bridge.apply_finished.emit(token, str(exc))
+    except Exception as exc:  # the window is hidden; it has to be said somewhere
+        bridge.apply_finished.emit(token, t("Unexpected error: {error}", error=exc))
+    else:
+        bridge.apply_finished.emit(token, "")
+
+
+def _copy_in_background(bridge, token, text):
+    # Under the paste lock, so a dictation restoring its clipboard at this
+    # moment cannot put the old contents back over the answer.
+    try:
+        with selection._paste_lock():
+            paste.copy(text)
+    except Exception as exc:  # the button must always come back
+        bridge.copy_finished.emit(token, str(exc) or t("Copy failed"))
+    else:
+        bridge.copy_finished.emit(token, "")
+
+
+class AnswerWindow(QDialog):
     def __init__(self, instruction, answer, selected="", can_apply=False,
-                 apply_fn=None, agent="", parent=None):
+                 apply_fn=None, agent="", bridge=None, parent=None):
         super().__init__(parent)
         self._apply_fn = apply_fn
         self._thread = None
         self._copy_thread = None
-        # Set once a newer answer has taken this one's place: a failed Apply
-        # then must not bring the old window back beside the new one.
-        self.stale = False
-        self.copy_done.connect(self._copied)
-        # Nothing was pasted, so the answer comes back to be copied instead.
-        self.apply_failed.connect(self._reopen)
+        self.token = next(_tokens)
+        self.bridge = bridge or shared_bridge()
+        # Bound methods of this window: Qt drops the connections when the
+        # window is deleted, so a late result for it reaches nothing here.
+        self.bridge.apply_finished.connect(self._applied)
+        self.bridge.copy_finished.connect(self._copied)
         self.setWindowTitle(t("Dikte: {name}", name=agent) if agent else "Dikte")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.resize(520, 360)
@@ -119,61 +163,35 @@ class AnswerWindow(QDialog):
         """Hide, so the selection's window has the focus back, then paste."""
         if not self.can_apply:
             return
-        text = self.text()
         self.hide()
-
-        def work():
-            try:
-                self._apply_fn(text)
-            except paste.PasteError as exc:
-                self.apply_failed.emit(str(exc))
-            except Exception as exc:  # the window is hidden; say it somewhere
-                self.apply_failed.emit(t("Unexpected error: {error}", error=exc))
-            finally:
-                self.work_done.emit()
-
-        self._thread = threading.Thread(target=work, daemon=True)
+        self._thread = threading.Thread(
+            target=_apply_in_background,
+            args=(self.bridge, self.token, self._apply_fn, self.text()),
+            daemon=True)
         self._thread.start()
         self.accept()
 
     def copy(self):
-        """Put the text on the clipboard, on a thread of its own.
-
-        It takes the paste lock, so a dictation restoring its clipboard at this
-        moment cannot put the old contents back over the answer, and waiting
-        for that lock must not freeze the window.
-        """
+        """Put the text on the clipboard, on a thread of its own, so waiting
+        for the paste lock never freezes the window. A second click while one
+        is running is ignored."""
         if self._copy_thread is not None and self._copy_thread.is_alive():
             return
-        text = self.text()
-
-        def work():
-            try:
-                with selection._paste_lock():
-                    paste.copy(text)
-            except Exception as exc:  # the button must always come back
-                self.copy_done.emit(str(exc) or t("Copy failed"))
-            else:
-                self.copy_done.emit("")
-            finally:
-                self.work_done.emit()
-
-        self._copy_thread = threading.Thread(target=work, daemon=True)
+        self._copy_thread = threading.Thread(
+            target=_copy_in_background,
+            args=(self.bridge, self.token, self.text()), daemon=True)
         self._copy_thread.start()
 
-    def _reopen(self, _message):
-        if not self.stale:
+    def _applied(self, token, error):
+        # Nothing was pasted, so the answer comes back to be copied instead.
+        # The error itself is reported by the application.
+        if token == self.token and error:
             self.show()
             self.raise_()
 
-    def join(self, timeout=1.0):
-        """Wait for this window's threads to end; whether they all have."""
-        for thread in (self._thread, self._copy_thread):
-            if thread is not None:
-                thread.join(timeout)
-        return not self.busy
-
-    def _copied(self, error):
+    def _copied(self, token, error):
+        if token != self.token:
+            return
         if error:
             self.copy_button.setToolTip(_tip(error))
             self.copy_button.setText(t("Copy failed"))
