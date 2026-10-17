@@ -467,3 +467,42 @@ class ProbeOnce(DikteTest):
         QApplication.processEvents()
         profiles_ui._relay().probed.emit(False)
         QApplication.processEvents()
+
+
+class EdgeFallback(DikteTest):
+    def choose(self, conf, title):
+        return profiles.choose(conf, "msedge", True, title).name
+
+    def test_the_site_part_wins_and_the_part_before_is_only_a_fallback(self):
+        both = self.config(profiles=[{"name": "Mail", "sites": ["Gmail"]},
+                                     {"name": "Reading", "sites": ["Medium"]}])
+        self.assertEqual(self.choose(both, "Leaving Gmail - Medium - Microsoft Edge"), "Reading")
+        mail = self.config(profiles=[{"name": "Mail", "sites": ["Gmail"]}])
+        self.assertEqual(self.choose(mail, "Inbox - Gmail - Team - Microsoft Edge"), "Mail")
+
+    def test_never_the_page_text_once_a_profile_was_taken_off(self):
+        mail = self.config(profiles=[{"name": "Mail", "sites": ["Gmail"]}])
+        self.assertEqual(self.choose(mail, "Leaving Gmail - Medium - Work - Microsoft Edge"), "")
+
+    def test_a_turkish_profile_name_is_recognised_folded(self):
+        self.assertEqual(profiles.propose_site(
+            "Video - YouTube - Varsayılan - Microsoft Edge"), "YouTube")
+
+
+class GnomeSessions(DikteTest):
+    def backend(self, desktop):
+        import os
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch.dict(os.environ, {"WAYLAND_DISPLAY": "w",
+                                             "XDG_CURRENT_DESKTOP": desktop}, clear=True):
+            return frontapp.backend()
+
+    def test_distribution_sessions_run_gnome_shell(self):
+        for desktop in ("GNOME", "ubuntu:GNOME", "pop:GNOME", "zorin:GNOME"):
+            with self.subTest(desktop=desktop):
+                self.assertIs(self.backend(desktop), frontapp._gnome)
+
+    def test_desktops_built_on_gnome_are_not_gnome_shell(self):
+        for desktop in ("Budgie:GNOME", "X-Cinnamon:GNOME", "Unity:GNOME", "Pantheon:GNOME"):
+            with self.subTest(desktop=desktop):
+                self.assertIs(self.backend(desktop), frontapp._unknown)

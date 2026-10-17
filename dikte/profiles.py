@@ -306,8 +306,10 @@ def _browser_part(part):
 _EDGE = frozenset(("microsoftedge", "microsoftedgebeta", "microsoftedgedev",
                    "microsoftedgecanary"))
 # What an Edge profile is called, in the part Edge puts before its own name.
+# Written folded, the way fold() leaves the text it is matched against: the
+# dotless and dotted i are a plain i there (Varsayılan is varsayilan).
 _EDGE_PROFILE = re.compile(
-    r"^(?:personal|work|school|guest|default|kişisel|iş|okul|misafir|varsayılan"
+    r"^(?:personal|work|school|guest|default|kişisel|iş|okul|misafir|varsayilan"
     r"|(?:profile|profil) \d+)$")
 # Edge folds a window of tabs into "Page and 3 more pages".
 _MORE_PAGES = re.compile(r"\s+(?:and \d+ more pages?|ve \d+ sayfa daha)$", re.IGNORECASE)
@@ -318,8 +320,9 @@ def _edge_profile(part):
 
 
 def _parse_title(title):
-    """(parts, edge): the parts of a tab title that belong to the page, and
-    whether Edge wrote it. The browser's own name goes, but never the only
+    """(parts, edge, profiled): the parts of a tab title that belong to the
+    page, whether Edge wrote it, and whether an Edge profile's name was taken
+    off. The browser's own name goes, but never the only
     part left ("Google - Google Chrome" keeps Google); a title that is
     nothing but the browser's name is no page at all. Counters go, an Edge
     profile's name goes, and so does Edge's "and 3 more pages"."""
@@ -327,17 +330,18 @@ def _parse_title(title):
     title = (title or "").replace("\u200b", "")
     parts = [p.strip() for p in _TITLE_PARTS.split(title) if p.strip()]
     if len(parts) == 1 and _browser_part(parts[0]):
-        return [], False
+        return [], False, False
     edge = bool(parts) and fold(parts[-1]).replace(" ", "") in _EDGE
     while len(parts) > 1 and _browser_part(parts[-1]):
         parts.pop()
-    if edge and len(parts) > 1 and _edge_profile(parts[-1]):
+    profiled = edge and len(parts) > 1 and _edge_profile(parts[-1])
+    if profiled:
         parts.pop()
     parts = [" ".join(_MORE_PAGES.sub("", _COUNTER.sub(" ", p)).split()) for p in parts]
     parts = [p for p in parts if p]
     if len(parts) == 1 and fold(parts[0]) in _BLANK:
-        return [], edge
-    return parts, edge
+        return [], edge, profiled
+    return parts, edge, profiled
 
 
 def title_parts(title):
@@ -358,16 +362,20 @@ def site_segments(title):
     """The parts of a title a site keyword is looked for in, best first: the
     site part, then the last part. The first part only when the last says
     nothing but where in a site one is (a site-first title, "Gmail - Inbox"),
-    and on Edge the part before the last as well, which may be a profile's
-    name or the site. Never the whole title, nor the parts in between: a site
-    matches the site's name in the title, not the page's text."""
-    parts, edge = _parse_title(title)
+    and on Edge, last of all, the part before the last: Edge puts a profile's
+    name there, and when no recognised profile was taken off, the last part
+    may be one ("Page - Medium - Team") and the site the part before it. It
+    is tried only after every profile failed on everything else, and never
+    once a profile's name was taken off, when it is the page's own text.
+    Never the whole title, nor the parts in between: a site matches the
+    site's name in the title, not the page's text."""
+    parts, edge, profiled = _parse_title(title)
     if not parts:
         return []
     out = [_site_part(parts), parts[-1]]
     if len(parts) > 1 and fold(parts[-1]) in _GENERIC:
         out.append(parts[0])
-    if edge and len(parts) > 1:
+    if edge and not profiled and len(parts) > 1:
         out.append(parts[-2])
     return list(dict.fromkeys(out))
 

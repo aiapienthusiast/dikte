@@ -457,6 +457,10 @@ _COMPOSITORS = (("HYPRLAND_INSTANCE_SIGNATURE", "hyprland", "_hyprland"),
                 ("NIRI_SOCKET", "niri", "_niri"))
 
 
+_NOT_GNOME_SHELL = frozenset(("budgie", "x-cinnamon", "cinnamon", "unity", "mate",
+                              "xfce", "lxqt", "pantheon"))
+
+
 def backend():
     """The function that can answer on this session. Read every time, like
     paste.desktop(), so a test can say where it is standing."""
@@ -474,9 +478,10 @@ def backend():
         return _x11
     if "kde" in desktops:
         return _kde_wayland
-    # GNOME itself, not a desktop built on it (Budgie, Cinnamon, Unity): their
-    # shells do not load GNOME Shell extensions.
-    if desktops[:1] == ["gnome"]:
+    # GNOME Shell, whatever the distribution calls its session (ubuntu:GNOME,
+    # pop:GNOME, zorin:GNOME), but not a desktop that only builds on GNOME
+    # and runs a shell of its own, which loads no Shell extensions.
+    if "gnome" in desktops and desktops[0] not in _NOT_GNOME_SHELL:
         return _gnome
     return _unknown
 
