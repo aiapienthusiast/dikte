@@ -49,6 +49,8 @@ class _Relay(QObject):
     # A question's number, the program in front, and its title when it is a
     # browser: what Add site reads after its countdown.
     titled = pyqtSignal(object, str, str)
+    # Whether GNOME's Window Calls extension answered, once it has been asked.
+    probed = pyqtSignal(object)
 
 
 _RELAY = []
@@ -386,6 +388,12 @@ class ProfilesEditor(QWidget):
         self._default = profiles.clean({}, named=False)
         self._named = []
         self._filling = False
+        self._site_question = None
+        self._site_target = None
+        self._countdown = 0
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._tick)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(_label(t(
@@ -543,12 +551,15 @@ class ProfilesEditor(QWidget):
         self._find_timer.timeout.connect(self._show_found)
         _relay().found.connect(self._found)
         _relay().titled.connect(self._titled)
-        self._site_question = None
-        self._site_target = None
-        self._countdown = 0
-        self._countdown_timer = QTimer(self)
-        self._countdown_timer.setInterval(1000)
-        self._countdown_timer.timeout.connect(self._tick)
+        _relay().probed.connect(lambda _present: self.detection.setText(
+            self.detection_text()))
+        if (frontapp.backend() is frontapp._gnome
+                and frontapp.gnome_extension["present"] is None):
+            # Asked once, off this thread, so the note can say whether the
+            # extension is there rather than guess from a folder name.
+            relay = _relay()
+            threading.Thread(target=lambda: relay.probed.emit(frontapp.probe_gnome()),
+                             daemon=True).start()
         self._asked = 0
 
     # ---- the form ---------------------------------------------------------
@@ -599,7 +610,7 @@ class ProfilesEditor(QWidget):
         if backend is frontapp._kde_wayland and not frontapp.shutil.which("kdotool"):
             return t("On KDE Plasma under Wayland, per-application profiles need "
                      "kdotool installed.")
-        if backend is frontapp._gnome and not frontapp.gnome_extension_installed():
+        if backend is frontapp._gnome and frontapp.gnome_extension["present"] is False:
             return t("On GNOME, per-application profiles need the “Window "
                      "Calls” GNOME Shell extension installed.")
         return t("The program in front is looked up when a recording starts. "
@@ -702,8 +713,15 @@ class ProfilesEditor(QWidget):
         if asked != self._site_question:
             return
         self._site_question = None
-        self.read_site_button.setEnabled(True)
+        # Only back on for a named profile: Default has no sites to add to.
+        self.read_site_button.setEnabled(self.current() is not self._default)
         target, self._site_target = self._site_target, None
+        if target is None or not any(target is p for p in self._named):
+            # Removed, or the settings reloaded, while the countdown ran.
+            self.site_status.setText(t(
+                "The profile changed while the tab was being read, so nothing "
+                "was added. Try Add site again."))
+            return
         if not program:
             self.site_status.setText(t("The program in front could not be found out."))
             return
@@ -714,9 +732,11 @@ class ProfilesEditor(QWidget):
             return
         keyword = profiles.propose_site(title)
         if not keyword:
+            # A blank tab, or a title that is only the browser's own name:
+            # never add the browser as a site.
             self.site_status.setText(t(
-                "Read from {browser}, but its window had no title to take a "
-                "site from.", browser=program))
+                "Read from {browser}, but its title names no site. Open the "
+                "site's tab first, then try again.", browser=program))
             return
         # Shown so the user can see where the keyword came from. Only on
         # screen: the title is not stored anywhere.
@@ -857,9 +877,12 @@ class ProfilesEditor(QWidget):
         self.apps_label.setEnabled(named)
         self._fill_sites(profile)
         for widget in (self.sites, self.site_edit, self.add_site_button,
-                       self.read_site_button, self.remove_site_button,
-                       self.sites_label):
+                       self.remove_site_button, self.sites_label):
             widget.setEnabled(named)
+        # Not while a countdown or a reading is under way: a second one would
+        # start on top of it.
+        busy = self._countdown_timer.isActive() or self._site_question is not None
+        self.read_site_button.setEnabled(named and not busy)
         for key, box in self.style_boxes.items():
             index = box.findData(profile["style"].get(key, ""))
             box.setCurrentIndex(max(0, index))

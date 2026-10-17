@@ -168,6 +168,11 @@ vivaldi vivaldi-stable vivaldi-bin
 opera
 microsoft-edge microsoft-edge-stable microsoft-edge-beta msedge
 librewolf floorp waterfox
+epiphany org.gnome.epiphany falkon org.kde.falkon
+mullvad-browser mullvadbrowser net.mullvad.mullvadbrowser
+tor-browser torbrowser org.torproject.torbrowser-launcher
+com.github.micahflee.torbrowser-launcher
+ungoogled-chromium io.github.ungoogled_software.ungoogled_chromium
 org.mozilla.firefox app.zen_browser.zen io.gitlab.librewolf-community
 org.chromium.chromium com.google.chrome com.brave.browser com.vivaldi.vivaldi
 com.opera.opera com.microsoft.edge one.ablaze.floorp net.waterfox.waterfox
@@ -239,14 +244,17 @@ def site_in(keyword, title):
 
 
 def for_site(conf, title):
-    """(profile, keyword) for the first named profile with a site in `title`,
-    or (None, "")."""
-    if not title:
-        return None, ""
-    for profile in named_profiles(conf):
-        for keyword in profile["sites"]:
-            if site_in(keyword, title):
-                return profile, keyword
+    """(profile, keyword) for the named profile whose site is in the site part
+    of `title`, or (None, ""). Only the site part: a page whose own text names
+    another site ("Why I left Gmail - Medium") belongs to the site it is on.
+    The segment the site was taken from is tried first, so of two profiles
+    that match, the one for that segment wins."""
+    found = named_profiles(conf)
+    for segment in site_segments(title):
+        for profile in found:
+            for keyword in profile["sites"]:
+                if site_in(keyword, segment):
+                    return profile, keyword
     return None, ""
 
 
@@ -260,29 +268,101 @@ def wants_titles(conf):
 # page and its own name: the em dash (Firefox and Zen), the en dash, a hyphen
 # (Chrome and its kin), the vertical bar and the middle dot.
 _TITLE_PARTS = re.compile(r"\s+(?:\u2014|\u2013|-|\||\u00b7)\s+")
-_BROWSER_WORDS = ("firefox", "chrome", "chromium", "brave", "vivaldi", "opera",
-                  "edge", "librewolf", "floorp", "waterfox", "zen browser",
-                  "mozilla", "zen")
-_DOMAIN = re.compile(r"^(?:[\w-]+\.)*([\w-]+)\.[a-z]{2,}$", re.IGNORECASE)
+# The words a browser's own name is made of. A part of a title made only of
+# these ("Mozilla Firefox", "Google Chrome", "Zen Browser", "Microsoft Edge")
+# is the browser, not the site.
+_BROWSER_WORDS = frozenset("""
+mozilla firefox google chrome chromium ungoogled zen browser brave microsoft
+edge opera gx vivaldi librewolf floorp waterfox epiphany web falkon mullvad tor
+private browsing nightly developer edition beta dev canary stable
+""".split())
+# What a tab with no site in it is called.
+_BLANK = frozenset(("new tab", "yeni sekme", "about:blank", "about:newtab",
+                    "about:home", "new private tab", "start page", "untitled",
+                    "adsız", "private browsing", "yeni gizli sekme"))
+# Parts of a title that say where in a site one is, not which site: when the
+# last part is one of these and the first is a name, the site came first
+# ("Gmail - Inbox (3) - Opera").
+_GENERIC = frozenset(("inbox", "home", "chat", "chats", "messages", "general",
+                      "dashboard", "settings", "search", "notifications", "feed",
+                      "timeline", "explore", "gelen kutusu", "ana sayfa",
+                      "sohbetler", "mesajlar", "bildirimler", "ayarlar"))
+_COUNTER = re.compile(r"[(\[]\d+\+?[)\]]")
+_DOMAIN = re.compile(r"^[\w-]+(?:\.[\w-]+)+$")
+# Public suffixes of two parts, so news.bbc.co.uk is "bbc" and not "co".
+_TWO_PART_SUFFIXES = frozenset("""
+co.uk ac.uk gov.uk org.uk ltd.uk me.uk net.uk
+com.au net.au org.au edu.au gov.au
+com.tr net.tr org.tr gov.tr edu.tr k12.tr bel.tr av.tr
+com.br co.jp ne.jp co.nz co.za com.mx co.in co.kr com.cn
+""".split())
+
+
+def _browser_part(part):
+    words = re.findall(r"\w+", fold(part))
+    return bool(words) and all(w in _BROWSER_WORDS for w in words)
+
+
+def title_parts(title):
+    """The parts of a tab title that belong to the page: without the
+    browser's own name, without an Edge profile's name before it, and without
+    unread counters. Empty for a blank tab or a title that is only the
+    browser."""
+    # Edge writes its name with a zero-width space in it.
+    title = (title or "").replace("\u200b", "")
+    parts = [p.strip() for p in _TITLE_PARTS.split(title) if p.strip()]
+    edge = bool(parts) and fold(parts[-1]).replace(" ", "") == "microsoftedge"
+    count = len(parts)
+    while parts and _browser_part(parts[-1]):
+        parts.pop()
+    if edge and count >= 3 and len(parts) >= 2:
+        # "Page - Work - Microsoft Edge": the part before Edge is the profile.
+        parts.pop()
+    parts = [" ".join(_COUNTER.sub(" ", p).split()) for p in parts]
+    parts = [p for p in parts if p]
+    if len(parts) == 1 and fold(parts[0]) in _BLANK:
+        return []
+    return parts
+
+
+def _site_part(parts):
+    """Which part of a title names the site: the last, unless the first is a
+    single name and the last only says where in the site one is."""
+    first, last = parts[0], parts[-1]
+    if (len(parts) > 1 and len(first.split()) == 1 and first[:1].isupper()
+            and fold(last) in _GENERIC):
+        return first
+    return last
+
+
+def site_segments(title):
+    """The parts of a title a site keyword is looked for in, best first: the
+    site part, then the last part, then a short first part (a site-first
+    title). Never the whole title."""
+    parts = title_parts(title)
+    if not parts:
+        return []
+    out = [_site_part(parts), parts[-1]]
+    if len(parts[0].split()) <= 3:
+        out.append(parts[0])
+    return list(dict.fromkeys(out))
 
 
 def propose_site(title):
-    """A keyword for the site a tab title belongs to, for the user to check.
-
-    The browser's own name goes first, then the site is usually the last part
-    left ("Video - YouTube", "Inbox - you@x.com - Gmail"). A count of unread
-    items in front of it ("(2) WhatsApp") is dropped, a domain becomes its
-    name (web.whatsapp.com: whatsapp), and a long part gives up its last word."""
-    parts = [p.strip() for p in _TITLE_PARTS.split(title or "") if p.strip()]
-    # Whole words, so a page called "Knowledge base" is not taken for Edge.
-    while len(parts) > 1 and any(site_in(w, parts[-1]) for w in _BROWSER_WORDS):
-        parts.pop()
+    """A keyword for the site a tab title belongs to, for the user to check:
+    the site part of it (see _site_part), a domain turned into its name
+    (web.whatsapp.com: whatsapp, news.bbc.co.uk: bbc), and a long part cut to
+    its last word. "" for a blank tab or a title that is only the browser."""
+    parts = title_parts(title)
     if not parts:
         return ""
-    site = re.sub(r"^\(\d+\+?\)\s*", "", parts[-1]).strip()
-    domain = _DOMAIN.match(site)
-    if domain:
-        return domain.group(1)
+    site = _site_part(parts)
+    if _DOMAIN.match(site) and "." in site:
+        labels = site.lower().split(".")
+        if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
+            return labels[-3]
+        if len(labels) >= 2:
+            return labels[-2]
     words = site.split()
     if len(words) > 3:
         site = words[-1]

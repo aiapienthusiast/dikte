@@ -125,8 +125,10 @@ class _ProfileLookup:
     result() is asked for on the dictation thread, never on this one: it may
     wait for the lookup, and the main thread is what draws the indicator."""
 
-    # Longer than the three subprocess timeouts frontapp may spend under KDE,
-    # and on the dictation thread, where a wait holds up nothing on screen.
+    # Longer than the worst case frontapp can spend, each call capped at its
+    # TIMEOUT of 0.5 s: four calls under KDE, five under GNOME (List, three
+    # Details, GetTitle). Waited on the dictation thread, where it holds up
+    # nothing on screen.
     WAIT = 3.0
 
     def __init__(self, conf, front):

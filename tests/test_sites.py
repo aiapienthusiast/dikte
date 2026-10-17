@@ -49,12 +49,39 @@ class Matching(DikteTest):
         self.assertEqual((choice.name, choice.site), ("Mail", "Gmail"))
         self.assertNotIn("Inbox", repr(choice))
 
+    def test_only_the_site_part_of_the_title_counts(self):
+        """A page that names another site belongs to the site it is on."""
+        conf = self.config(profiles=[{"name": "Mail", "sites": ["Gmail"]},
+                                     {"name": "Reading", "sites": ["Medium"]}])
+        self.assertEqual(profiles.choose(conf, "firefox", True,
+                                         f"Why I left Gmail - Medium {EM} Mozilla Firefox").name,
+                         "Reading")
+        conf = self.config(profiles=[{"name": "Mail", "sites": ["Gmail"]}])
+        self.assertEqual(profiles.choose(conf, "firefox", True,
+                                         f"Why I left Gmail - Medium {EM} Mozilla Firefox").name,
+                         "")
+        # A site-first title still finds its site.
+        self.assertEqual(profiles.choose(conf, "opera", True,
+                                         "Gmail - Inbox (3) - Opera").name, "Mail")
+
+    def test_the_site_segment_wins_over_another_match(self):
+        conf = self.config(profiles=[{"name": "Docs", "sites": ["Report"]},
+                                     {"name": "Google", "sites": ["Google Docs"]}])
+        self.assertEqual(profiles.choose(conf, "chrome", True,
+                                         "Report - Google Docs - Google Chrome").name,
+                         "Google")
+
+    def test_turkish_i_folds_every_way(self):
+        self.assertTrue(profiles.site_in("ılık", "Ilık - Brave"))
+        self.assertTrue(profiles.site_in("Işık", "IŞIK haberleri"))
+
     def test_only_a_browser_title_counts(self):
         """A document called Gmail in an editor is not the site."""
         self.assertEqual(self.choose("code", "Gmail notes.md - Code").name, "")
 
     def test_browser_forms(self):
-        for name in ("firefox", "Navigator", "org.mozilla.firefox", "zen",
+        for name in ("org.gnome.Epiphany", "falkon", "mullvad-browser", "tor-browser",
+                     "io.github.ungoogled_software.ungoogled_chromium", "firefox", "Navigator", "org.mozilla.firefox", "zen",
                      "app.zen_browser.zen", "Google-chrome", "chromium-browser",
                      "brave-browser", "com.brave.Browser", "vivaldi-stable",
                      "msedge.exe", "microsoft-edge", "librewolf", "floorp", "waterfox"):
@@ -99,7 +126,18 @@ class Proposal(DikteTest):
             (f"Dikte | Notion {EM} Mozilla Firefox", "Notion"),
             (f"Pull requests {EN} GitHub - Brave", "GitHub"),
             ("web.whatsapp.com - Chromium", "whatsapp"),
-            ("Knowledge base - Confluence - Microsoft Edge", "Confluence"),
+            ("Knowledge base - Confluence - Work - Microsoft\u200b Edge", "Confluence"),
+            ("Video - YouTube - Personal - Microsoft Edge", "YouTube"),
+            ("Gmail - Inbox (3) - Opera", "Gmail"),
+            ("Notion - Home - Brave", "Notion"),
+            ("Report (2) - Google Docs - Google Chrome", "Google Docs"),
+            ("news.bbc.co.uk - Brave", "bbc"),
+            ("www.e-devlet.gov.tr - Mozilla Firefox", "e-devlet"),
+            ("Mozilla Firefox", ""),
+            ("New Tab - Google Chrome", ""),
+            (f"Zen Browser", ""),
+            ("about:blank", ""),
+            ("Brave", ""),
             ("WhatsApp", "WhatsApp"),
             ("", ""),
         ):
@@ -108,10 +146,10 @@ class Proposal(DikteTest):
 
 
 class Readers(DikteTest):
-    def test_x11_asks_for_the_title_in_the_same_call(self):
+    def test_x11_asks_for_the_title_only_once_it_knows_a_browser(self):
         replies = [finished("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x2\n"),
-                   finished('WM_CLASS(STRING) = "Navigator", "firefox"\n'
-                            '_NET_WM_NAME(UTF8_STRING) = "Inbox \\"new\\" - Gmail '
+                   finished('WM_CLASS(STRING) = "Navigator", "firefox"\n'),
+                   finished('_NET_WM_NAME(UTF8_STRING) = "Inbox \\"new\\" - Gmail '
                             f'{EM} Mozilla Firefox"\n'
                             'WM_NAME(STRING) = "fallback"\n')]
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
@@ -120,25 +158,31 @@ class Readers(DikteTest):
             program, title = frontapp.front(None, profiles.is_browser)
         self.assertEqual((program, title),
                          ("firefox", f'Inbox "new" - Gmail {EM} Mozilla Firefox'))
-        self.assertEqual(run.call_count, 2)
-        self.assertIn("_NET_WM_NAME", run.call_args.args[0])
+        self.assertEqual(run.call_count, 3)
+        self.assertNotIn("_NET_WM_NAME", run.call_args_list[1].args[0])
+        self.assertIn("_NET_WM_NAME", run.call_args_list[2].args[0])
+
+    def test_xprop_escapes_and_latin1(self):
+        self.assertEqual(frontapp._xprop_string('"a\\nb\\tc\\\\d\\"e"'), 'a\nb\tc\\d"e')
+        self.assertEqual(frontapp._xprop_string('"caf\\351"', "latin-1"), "café")
+        self.assertEqual(frontapp._xprop_string('"\\303\\274"'), "ü")
 
     def test_x11_falls_back_to_wm_name(self):
         replies = [finished("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x2\n"),
-                   finished('WM_CLASS(STRING) = "x", "chromium"\n'
-                            'WM_NAME(STRING) = "YouTube - Chromium"\n')]
+                   finished('WM_CLASS(STRING) = "x", "chromium"\n'),
+                   finished('WM_NAME(STRING) = "YouTube - Chromium"\n')]
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
                 mock.patch.object(frontapp.subprocess, "run", side_effect=replies):
             self.assertEqual(frontapp._x11(title_for=profiles.is_browser),
                              ("chromium", "YouTube - Chromium"))
 
-    def test_x11_keeps_no_title_for_a_program_that_is_not_a_browser(self):
+    def test_x11_asks_no_title_of_a_program_that_is_not_a_browser(self):
         replies = [finished("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x2\n"),
-                   finished('WM_CLASS(STRING) = "x", "code"\n'
-                            '_NET_WM_NAME(UTF8_STRING) = "secret.txt - Code"\n')]
+                   finished('WM_CLASS(STRING) = "x", "code"\n')]
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
-                mock.patch.object(frontapp.subprocess, "run", side_effect=replies):
+                mock.patch.object(frontapp.subprocess, "run", side_effect=replies) as run:
             self.assertEqual(frontapp._x11(title_for=profiles.is_browser), ("code", ""))
+        self.assertEqual(run.call_count, 2)
 
     def test_kde_reads_the_title_with_one_more_call_and_only_for_a_browser(self):
         replies = [finished("{w}\n"), finished("org.mozilla.firefox\n"),
@@ -186,7 +230,6 @@ class Readers(DikteTest):
         with mock.patch.object(frontapp, "_macos_name", return_value="Firefox"):
             self.assertEqual(frontapp._macos(42, title_for=profiles.is_browser),
                              ("Firefox", ""))
-            self.assertEqual(frontapp._macos(42), "Firefox")
 
     def test_the_lookup_reads_titles_only_when_a_profile_lists_a_site(self):
         from dikte import app
@@ -283,3 +326,60 @@ class Editor(DikteTest):
             self.assertIn("not available on macOS", profiles_ui.ProfilesEditor.sites_text())
         with mock.patch.object(frontapp, "backend", return_value=frontapp._x11):
             self.assertIn("never saved", profiles_ui.ProfilesEditor.sites_text())
+
+
+class CountdownEdges(DikteTest):
+    def editor(self, conf):
+        editor = profiles_ui.ProfilesEditor()
+        self.addCleanup(editor.deleteLater)
+        editor.load(conf)
+        editor.select(1)
+        return editor
+
+    def test_a_profile_removed_during_the_countdown_is_said_so(self):
+        editor = self.editor(self.config(profiles=[{"name": "Chat"}]))
+        with mock.patch.object(profiles_ui.threading, "Thread"):
+            editor.start_site_countdown()
+            for _ in range(3):
+                editor._tick()
+        asked = editor._site_question
+        editor.remove_current()
+        editor._titled(asked, "firefox", "(2) WhatsApp")
+        self.assertIn("profile changed", editor.site_status.text())
+
+    def test_a_reload_during_the_countdown_is_said_so(self):
+        conf = self.config(profiles=[{"name": "Chat"}])
+        editor = self.editor(conf)
+        with mock.patch.object(profiles_ui.threading, "Thread"):
+            editor.start_site_countdown()
+            for _ in range(3):
+                editor._tick()
+        asked = editor._site_question
+        editor.load(conf)
+        editor._titled(asked, "firefox", "(2) WhatsApp")
+        self.assertIn("profile changed", editor.site_status.text())
+
+    def test_selecting_another_profile_does_not_re_enable_the_button(self):
+        editor = self.editor(self.config(profiles=[{"name": "Chat"}, {"name": "Mail"}]))
+        editor.start_site_countdown()
+        editor.select(2)
+        self.assertFalse(editor.read_site_button.isEnabled())
+        editor._countdown_timer.stop()
+
+    def test_the_answer_does_not_enable_the_button_on_default(self):
+        editor = self.editor(self.config(profiles=[{"name": "Chat"}]))
+        with mock.patch.object(profiles_ui.threading, "Thread"):
+            editor.start_site_countdown()
+            for _ in range(3):
+                editor._tick()
+        asked = editor._site_question
+        editor.select(0)
+        editor._titled(asked, "firefox", "(2) WhatsApp")
+        self.assertFalse(editor.read_site_button.isEnabled())
+
+    def test_a_blank_tab_asks_for_the_site_tab_and_adds_nothing(self):
+        editor = self.editor(self.config(profiles=[{"name": "Chat"}]))
+        editor._site_question, editor._site_target = 9, editor.current()
+        editor._titled(9, "firefox", "Mozilla Firefox")
+        self.assertIn("Open the site's tab first", editor.site_status.text())
+        self.assertEqual(editor.current()["sites"], [])

@@ -12,8 +12,8 @@ way paste.py and audio.py are laid out:
             and the name of its executable
   Windows   the foreground window, its process, and the image file of that
             process, through user32 and kernel32
-  X11       xprop: the active window from the root, then its process id, and
-            the process name from /proc; the window class when there is no pid
+  X11       xprop: the active window from the root, then its class, or its
+            process name from /proc when it has none
   Wayland   no protocol tells a client which window has focus, so each
             compositor is asked in its own way, where it has one:
               KDE       kdotool, when it is installed
@@ -27,27 +27,28 @@ The name is the program's own (thunderbird, slack, code, firefox), lower case
 and without an .exe, which is what a profile lists.
 
 For a browser, the window title can be read as well, so that a profile can be
-chosen by the site in the tab: front() takes a `title_for` test and reads the
-title only for a program it says yes to. Each backend does that in at most one
-more call: X11 asks for the title in the request it already makes, KDE adds
-one kdotool call, Windows one GetWindowTextW. macOS would need the Screen
-Recording permission for other programs' titles, so it reads none. A title is
-returned to the caller and nothing else: it is never logged or kept here.
+chosen by the site in the tab. Every backend answers (name, title), and takes
+a `title_for` test: the title is asked for only once the program is known and
+the test says yes, in one more call (X11, KDE, GNOME, Windows). Hyprland, Sway
+and niri hand the title over in the one answer they give, so there it is
+dropped rather than not asked for. macOS would need the Screen Recording
+permission for other programs' titles, so it reads none. A title is returned
+to the caller and nothing else: it is never logged or kept here.
 """
 
 import ast
 import ctypes
-import glob
 import json
 import os
 import shutil
 import subprocess
 import sys
 
-# Each call's limit: long enough for a busy X server. Two calls at most on
-# X11, three or four under KDE, one on Hyprland, Sway and niri, and under
-# GNOME one List, a bounded number of Details and one GetTitle; all on a
-# thread of their own (see app.py).
+# Each call's limit: long enough for a busy X server. At worst three calls on
+# X11, four under KDE, one on Hyprland, Sway and niri, and under GNOME one
+# List, GNOME_DETAILS_LIMIT Details and one GetTitle. All of them run on a
+# thread of their own, and app.py waits at most _ProfileLookup.WAIT (3 s) for
+# them, which the worst case here stays inside.
 TIMEOUT = 0.5
 
 
@@ -60,13 +61,17 @@ def _clean(name):
     return name
 
 
-def _run(argv):
+def _call(argv):
+    """A finished command, or None when it could not run or timed out."""
     try:
-        res = subprocess.run(argv, capture_output=True, text=True,
-                             timeout=TIMEOUT)
+        return subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT)
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return res.stdout if res.returncode == 0 else ""
+        return None
+
+
+def _run(argv):
+    res = _call(argv)
+    return res.stdout if res is not None and res.returncode == 0 else ""
 
 
 _DELETED = " (deleted)"
@@ -94,12 +99,25 @@ def _process_name(pid):
         return ""
 
 
+def _wants(name, title_for):
+    return bool(name) and title_for is not None and title_for(_clean(name))
+
+
+def _answer(name, title, title_for):
+    """(name, title), the title kept only for a program `title_for` wants."""
+    name = name if isinstance(name, str) else ""
+    title = title if isinstance(title, str) else ""
+    return name, (title if _wants(name, title_for) else "")
+
+
+NOTHING = ("", "")
+
+
 # --- macOS ------------------------------------------------------------------
 
 def _macos(pid, title_for=None):
     """The name only: no title on macOS (see the module docstring)."""
-    name = _macos_name(pid)
-    return name if title_for is None else (name, "")
+    return _macos_name(pid), ""
 
 
 def _macos_name(pid):
@@ -160,7 +178,7 @@ def _windows(_pid=None, title_for=None):
         window = user32.GetForegroundWindow()
         if window:
             name = _win_image(user32, kernel32, window)
-            if name and title_for is not None and title_for(_clean(name)):
+            if _wants(name, title_for):
                 length = user32.GetWindowTextLengthW(window)
                 if length > 0:
                     buffer = ctypes.create_unicode_buffer(length + 1)
@@ -168,7 +186,7 @@ def _windows(_pid=None, title_for=None):
                     title = buffer.value
     except Exception:
         pass
-    return name if title_for is None else (name, title)
+    return name, title
 
 
 def _win_image(user32, kernel32, window):
@@ -190,11 +208,15 @@ def _win_image(user32, kernel32, window):
         kernel32.CloseHandle(handle)
 
 
-# --- Linux ------------------------------------------------------------------
+# --- X11 --------------------------------------------------------------------
 
-def _xprop_string(value):
-    """A string as xprop prints one: in quotes, with backslash escapes, and
-    with bytes it would not print as octal escapes of UTF-8."""
+_ESCAPES = {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}
+
+
+def _xprop_string(value, encoding="utf-8"):
+    """A string as xprop prints one: in quotes, with backslash escapes (\\n,
+    \\t, \\\\, \\" and octal for bytes it would not print). The bytes are UTF-8
+    for _NET_WM_NAME and Latin-1 for the older WM_NAME."""
     value = value.strip()
     if len(value) < 2 or value[0] != '"' or value[-1] != '"':
         return ""
@@ -207,78 +229,72 @@ def _xprop_string(value):
                 out.append(int(digits, 8) & 0xFF)
                 i += 4
                 continue
-            out.extend(inner[i + 1].encode("utf-8"))
+            following = inner[i + 1]
+            out.extend(_ESCAPES.get(following, following).encode(encoding, "replace"))
             i += 2
             continue
-        out.extend(char.encode("utf-8"))
+        out.extend(char.encode(encoding, "replace"))
         i += 1
-    return out.decode("utf-8", "replace")
+    return out.decode(encoding, "replace")
+
+
+def _xprop_value(found, prefix):
+    for line in found.splitlines():
+        if line.startswith(prefix) and "=" in line:
+            return line.split("=", 1)[1]
+    return ""
 
 
 def _x11(_pid=None, title_for=None):
-    def answer(name, title=""):
-        return name if title_for is None else (name, title)
-
+    """The active window, its class (or process), and only for a program that
+    wants it, its title, in a request of its own."""
     if not shutil.which("xprop"):
-        return answer("")
+        return NOTHING
     active = _run(["xprop", "-root", "_NET_ACTIVE_WINDOW"])
     # "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00007"
     window = active.rsplit("#", 1)[-1].strip().split(",")[0].strip()
     if not window.startswith("0x") or int(window, 16) == 0:
-        return answer("")
-    # The title rides along in the request already made, so it costs no
-    # call of its own; it is only kept below for a program that wants it.
-    wanted = ["_NET_WM_PID", "WM_CLASS"]
-    if title_for is not None:
-        wanted += ["_NET_WM_NAME", "WM_NAME"]
-    found = _run(["xprop", "-id", window] + wanted)
-    pid, klass, utf8_name, plain_name = "", "", "", ""
-    for line in found.splitlines():
-        if line.startswith("_NET_WM_PID") and "=" in line:
-            pid = line.split("=", 1)[1].strip()
-        elif line.startswith("WM_CLASS") and "=" in line:
-            # 'WM_CLASS(STRING) = "Navigator", "firefox"': the second is the
-            # class, which is the program; the first is one of its windows.
-            parts = [p.strip().strip('"') for p in line.split("=", 1)[1].split(",")]
-            klass = parts[-1] if parts else ""
-        elif line.startswith("_NET_WM_NAME") and "=" in line:
-            utf8_name = _xprop_string(line.split("=", 1)[1])
-        elif line.startswith("WM_NAME") and "=" in line:
-            plain_name = _xprop_string(line.split("=", 1)[1])
+        return NOTHING
+    found = _run(["xprop", "-id", window, "_NET_WM_PID", "WM_CLASS"])
+    pid = _xprop_value(found, "_NET_WM_PID").strip()
+    # 'WM_CLASS(STRING) = "Navigator", "firefox"': the second is the class,
+    # which is the program; the first is one of its windows.
+    parts = [p.strip().strip('"') for p in _xprop_value(found, "WM_CLASS").split(",")]
+    klass = parts[-1] if parts else ""
     # The class first: the process behind a window is often a runtime shared
     # by many programs, and a Flatpak's pid is not even one of this system's.
     name = klass or (_process_name(pid) if pid.isdigit() else "")
     title = ""
-    if title_for is not None and name and title_for(_clean(name)):
-        title = utf8_name or plain_name
-    return answer(name, title)
+    if _wants(name, title_for):
+        named = _run(["xprop", "-id", window, "_NET_WM_NAME", "WM_NAME"])
+        title = (_xprop_string(_xprop_value(named, "_NET_WM_NAME"))
+                 or _xprop_string(_xprop_value(named, "WM_NAME"), "latin-1"))
+    return name, title
 
+
+# --- Wayland ----------------------------------------------------------------
 
 def _kde_wayland(_pid=None, title_for=None):
-    """KWin through kdotool, the one Wayland compositor with a way to ask.
-    The window class first, for the same reason as under X11, and the process
-    only when there is no class. The title is one more call, made only for a
-    program that wants it."""
-    def answer(name, title=""):
-        return name if title_for is None else (name, title)
-
+    """KWin through kdotool. The window class first, for the same reason as
+    under X11, and the process only when there is no class. The title is one
+    more call, made only for a program that wants it."""
     if not shutil.which("kdotool"):
-        return answer("")
+        return NOTHING
     window = _run(["kdotool", "getactivewindow"]).strip()
     if not window:
-        return answer("")
+        return NOTHING
     name = _run(["kdotool", "getwindowclassname", window]).strip()
     if not name:
         pid = _run(["kdotool", "getwindowpid", window]).strip()
         name = _process_name(pid) if pid.isdigit() else ""
     title = ""
-    if title_for is not None and name and title_for(_clean(name)):
+    if _wants(name, title_for):
         title = _run(["kdotool", "getwindowname", window]).strip()
-    return answer(name, title)
+    return name, title
 
 
 def _unknown(_pid=None, title_for=None):
-    return "" if title_for is None else ("", "")
+    return NOTHING
 
 
 def _json(text):
@@ -288,24 +304,14 @@ def _json(text):
         return None
 
 
-def _answer(name, title, title_for):
-    """What every backend hands back: the name alone when no title was asked
-    for, else the pair, the title only for a program `title_for` wants."""
-    name = name if isinstance(name, str) else ""
-    if title_for is None:
-        return name
-    title = title if isinstance(title, str) else ""
-    return name, (title if name and title_for(_clean(name)) else "")
-
-
 def _hyprland(_pid=None, title_for=None):
     """One call: the active window's class (the one it started with when it
     has none now) and its title, in one JSON object."""
     if not shutil.which("hyprctl"):
-        return _answer("", "", title_for)
+        return NOTHING
     window = _json(_run(["hyprctl", "activewindow", "-j"]))
     if not isinstance(window, dict):
-        return _answer("", "", title_for)
+        return NOTHING
     name = window.get("class") or window.get("initialClass") or ""
     return _answer(name, window.get("title"), title_for)
 
@@ -331,10 +337,10 @@ def _sway(_pid=None, title_for=None):
     names itself by app_id; one under Xwayland has none, and its X11 class
     stands in."""
     if not shutil.which("swaymsg"):
-        return _answer("", "", title_for)
+        return NOTHING
     focused = _sway_focused(_json(_run(["swaymsg", "-t", "get_tree", "-r"])))
     if focused is None:
-        return _answer("", "", title_for)
+        return NOTHING
     name = focused.get("app_id")
     if not name:
         properties = focused.get("window_properties")
@@ -346,10 +352,10 @@ def _niri(_pid=None, title_for=None):
     """One call; "null" when nothing has focus, and either field may be
     missing."""
     if not shutil.which("niri"):
-        return _answer("", "", title_for)
+        return NOTHING
     window = _json(_run(["niri", "msg", "--json", "focused-window"]))
     if not isinstance(window, dict):
-        return _answer("", "", title_for)
+        return NOTHING
     return _answer(window.get("app_id") or "", window.get("title"), title_for)
 
 
@@ -358,8 +364,18 @@ _GNOME_WINDOWS = ["gdbus", "call", "--session", "--dest", "org.gnome.Shell",
                   "--method"]
 _GNOME_INTERFACE = "org.gnome.Shell.Extensions.Windows."
 # Details asked of at most this many windows, newest first, looking for the
-# focused one: the asking is one call each.
-GNOME_DETAILS_LIMIT = 12
+# focused one: one call each, and with List and GetTitle the worst case is
+# five calls, 2.5 s, inside the 3 s app.py waits.
+GNOME_DETAILS_LIMIT = 3
+
+# What the last GNOME lookup learned about the extension: True when it is
+# there, False when D-Bus said the interface or the object does not exist,
+# None before anything was asked. The Profiles tab reads it instead of
+# guessing at a folder name.
+gnome_extension = {"present": None}
+
+_MISSING = ("UnknownObject", "UnknownMethod", "UnknownInterface",
+            "ServiceUnknown", "No such interface", "No such object")
 
 
 def _gvariant_string(output):
@@ -377,21 +393,29 @@ def _gvariant_string(output):
 
 
 def _gnome_call(method, *arguments):
-    return _gvariant_string(_run(_GNOME_WINDOWS + [_GNOME_INTERFACE + method]
-                                 + [str(a) for a in arguments]))
+    res = _call(_GNOME_WINDOWS + [_GNOME_INTERFACE + method]
+                + [str(a) for a in arguments])
+    if res is None:
+        return ""
+    if res.returncode != 0:
+        if any(sign in (res.stderr or "") for sign in _MISSING):
+            gnome_extension["present"] = False
+        return ""
+    gnome_extension["present"] = True
+    return _gvariant_string(res.stdout)
 
 
 def _gnome(_pid=None, title_for=None):
     """GNOME Shell keeps window focus to itself; the Window Calls extension
     lends it out over D-Bus. List first (which may already say which window
-    has focus), Details for each until the focused one, and the title only
+    has focus), Details for a few until the focused one, and the title only
     for a program that wants it. Without the extension every call fails,
     and the answer is unknown."""
     if not shutil.which("gdbus"):
-        return _answer("", "", title_for)
+        return NOTHING
     windows = _json(_gnome_call("List"))
     if not isinstance(windows, list):
-        return _answer("", "", title_for)
+        return NOTHING
     windows = [w for w in windows if isinstance(w, dict)
                and isinstance(w.get("id"), int) and not isinstance(w.get("id"), bool)]
     focused = next((w for w in windows if w.get("focus") is True), None)
@@ -402,23 +426,19 @@ def _gnome(_pid=None, title_for=None):
                 focused = dict(window, **details)
                 break
     if focused is None:
-        return _answer("", "", title_for)
+        return NOTHING
     name = focused.get("wm_class") or focused.get("wm_class_instance") or ""
     if not isinstance(name, str):
         name = ""
-    title = ""
-    if title_for is not None and name and title_for(_clean(name)):
-        title = _gnome_call("GetTitle", focused["id"])
-    return name if title_for is None else (name, title)
+    title = _gnome_call("GetTitle", focused["id"]) if _wants(name, title_for) else ""
+    return name, title
 
 
-def gnome_extension_installed():
-    """Whether the Window Calls extension is on disk, looked for without a
-    subprocess: the settings window asks while it is being built."""
-    roots = [os.path.expanduser("~/.local/share/gnome-shell/extensions"),
-             "/usr/share/gnome-shell/extensions",
-             "/usr/local/share/gnome-shell/extensions"]
-    return any(glob.glob(os.path.join(root, "window-calls*")) for root in roots)
+def probe_gnome():
+    """Ask the extension once, for the Profiles tab. Off the main thread."""
+    if shutil.which("gdbus"):
+        _gnome_call("List")
+    return gnome_extension["present"]
 
 
 def _desktop():
@@ -449,27 +469,19 @@ def backend():
     return _unknown
 
 
-def program_name(pid=None):
-    """The program in front, lower case and bare, or "" when it is unknown.
+def front(pid=None, title_for=None):
+    """(program, title) of the window in front. The title is read only when
+    `title_for(program)` says so, and is "" otherwise or when it cannot be.
 
     `pid` is what macOS has already found out about the front, which saves
     asking twice; elsewhere it is not needed."""
     try:
-        return _clean(backend()(pid))
+        name, title = backend()(pid, title_for=title_for)
     except Exception:
-        return ""
-
-
-def front(pid=None, title_for=None):
-    """(program, title) of the window in front. The title is read only when
-    `title_for(program)` says so, and is "" otherwise or when it cannot be."""
-    if title_for is None:
-        return program_name(pid), ""
-    try:
-        found = backend()(pid, title_for=title_for)
-    except Exception:
-        return "", ""
-    if isinstance(found, str):
-        found = (found, "")
-    name, title = found
+        return NOTHING
     return _clean(name), (title or "").strip()
+
+
+def program_name(pid=None):
+    """The program in front, lower case and bare, or "" when it is unknown."""
+    return front(pid)[0]

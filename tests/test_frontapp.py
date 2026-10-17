@@ -1,7 +1,6 @@
 """Which program is in front, on each of the four systems, with the system
 itself faked at the one place each backend asks it."""
 
-import contextlib
 import ctypes
 import json
 import os
@@ -59,7 +58,7 @@ class Chooser(DikteTest):
 
     def test_names_come_back_bare_and_lower_case(self):
         with mock.patch.object(frontapp, "backend",
-                               return_value=lambda pid: r"C:\Apps\Slack.EXE"):
+                               return_value=lambda pid, title_for=None: (r"C:\Apps\Slack.EXE", "")):
             self.assertEqual(frontapp.program_name(), "slack")
 
 
@@ -75,7 +74,7 @@ class X11(DikteTest):
                              'WM_CLASS(STRING) = "Navigator", "firefox"\n') as run, \
                 mock.patch.object(frontapp, "_process_name", return_value="electron"):
             # The class, not the runtime the window happens to run on.
-            self.assertEqual(frontapp._x11(), "firefox")
+            self.assertEqual(frontapp._x11()[0], "firefox")
         self.assertEqual(run.call_args.args[0][:3], ["xprop", "-id", "0x3a00007"])
 
     def test_without_a_class_the_process_will_do(self):
@@ -83,34 +82,34 @@ class X11(DikteTest):
                 self.answers("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x1\n",
                              "_NET_WM_PID(CARDINAL) = 42\n"), \
                 mock.patch.object(frontapp, "_process_name", return_value="xterm"):
-            self.assertEqual(frontapp._x11(), "xterm")
+            self.assertEqual(frontapp._x11()[0], "xterm")
 
     def test_an_upgraded_program_loses_the_deleted_mark(self):
         with mock.patch.object(frontapp.os, "readlink",
                                return_value="/usr/lib/thunderbird/thunderbird (deleted)"):
             self.assertEqual(frontapp._process_name(42), "thunderbird")
         with mock.patch.object(frontapp, "backend",
-                               return_value=lambda pid: "Thunderbird (deleted)"):
+                               return_value=lambda pid, title_for=None: ("Thunderbird (deleted)", "")):
             self.assertEqual(frontapp.program_name(), "thunderbird")
 
     def test_without_a_pid_the_window_class_will_do(self):
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
                 self.answers("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x1\n",
                              'WM_CLASS(STRING) = "Navigator", "firefox"\n'):
-            self.assertEqual(frontapp._x11(), "firefox")
+            self.assertEqual(frontapp._x11()[0], "firefox")
 
     def test_no_active_window_or_no_xprop_is_unknown(self):
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
                 self.answers("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x0\n"):
-            self.assertEqual(frontapp._x11(), "")
+            self.assertEqual(frontapp._x11()[0], "")
         with mock.patch.object(frontapp.shutil, "which", return_value=None):
-            self.assertEqual(frontapp._x11(), "")
+            self.assertEqual(frontapp._x11()[0], "")
 
     def test_a_hung_xprop_is_unknown_rather_than_a_hang(self):
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
                 mock.patch.object(frontapp.subprocess, "run",
                                   side_effect=subprocess.TimeoutExpired("xprop", 0.5)):
-            self.assertEqual(frontapp._x11(), "")
+            self.assertEqual(frontapp._x11()[0], "")
 
 
 class KDEWayland(DikteTest):
@@ -118,7 +117,7 @@ class KDEWayland(DikteTest):
         replies = [finished("{1234-abcd}\n"), finished("org.kde.konsole\n")]
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/kdotool"), \
                 mock.patch.object(frontapp.subprocess, "run", side_effect=replies) as run:
-            self.assertEqual(frontapp._kde_wayland(), "org.kde.konsole")
+            self.assertEqual(frontapp._kde_wayland()[0], "org.kde.konsole")
         self.assertEqual(run.call_args.args[0][:2], ["kdotool", "getwindowclassname"])
 
     def test_kdotool_without_a_class_falls_back_to_the_process(self):
@@ -126,11 +125,11 @@ class KDEWayland(DikteTest):
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/kdotool"), \
                 mock.patch.object(frontapp.subprocess, "run", side_effect=replies), \
                 mock.patch.object(frontapp, "_process_name", return_value="code"):
-            self.assertEqual(frontapp._kde_wayland(), "code")
+            self.assertEqual(frontapp._kde_wayland()[0], "code")
 
     def test_without_kdotool_it_is_unknown(self):
         with mock.patch.object(frontapp.shutil, "which", return_value=None):
-            self.assertEqual(frontapp._kde_wayland(), "")
+            self.assertEqual(frontapp._kde_wayland()[0], "")
 
 
 class Windows(DikteTest):
@@ -162,23 +161,23 @@ class Windows(DikteTest):
     def test_no_foreground_window_is_unknown(self):
         user32, kernel32 = self.api(window=0)
         with mock.patch.object(frontapp, "_win_api", return_value=(user32, kernel32)):
-            self.assertEqual(frontapp._windows(), "")
+            self.assertEqual(frontapp._windows()[0], "")
 
     def test_no_user32_at_all_is_unknown(self):
         with mock.patch.object(frontapp, "_win_api", side_effect=OSError):
-            self.assertEqual(frontapp._windows(), "")
+            self.assertEqual(frontapp._windows()[0], "")
 
 
 class MacOS(DikteTest):
     def test_no_appkit_is_unknown(self):
         from dikte import mac_window
         with mock.patch.object(mac_window, "_appkit", side_effect=OSError):
-            self.assertEqual(frontapp._macos(4242), "")
+            self.assertEqual(frontapp._macos(4242)[0], "")
 
     def test_no_front_application_is_unknown(self):
         from dikte import mac_window
         with mock.patch.object(mac_window, "frontmost_pid", return_value=None):
-            self.assertEqual(frontapp._macos(None), "")
+            self.assertEqual(frontapp._macos(None)[0], "")
 
 
 def is_browser(name):
@@ -239,7 +238,7 @@ class WaylandCompositors(DikteTest):
                          frontapp._gnome):
             with self.subTest(function=function.__name__):
                 with mock.patch.object(frontapp.shutil, "which", return_value=None):
-                    self.assertEqual(function(), "")
+                    self.assertEqual(function(), ("", ""))
                 with mock.patch.object(frontapp.shutil, "which", return_value="/x"), \
                         mock.patch.object(frontapp.subprocess, "run",
                                           side_effect=subprocess.TimeoutExpired("x", 0.5)):
@@ -292,24 +291,37 @@ class WaylandCompositors(DikteTest):
 
 
 class DesktopNotes(DikteTest):
-    def note(self, backend, **patches):
+    def note(self, backend, present=None):
         from dikte import profiles_ui
-        with mock.patch.object(frontapp, "backend", return_value=backend):
-            with (mock.patch.multiple(frontapp, **patches) if patches
-                  else contextlib.nullcontext()):
-                return profiles_ui.ProfilesEditor.detection_text()
+        with mock.patch.object(frontapp, "backend", return_value=backend), \
+                mock.patch.dict(frontapp.gnome_extension, {"present": present}):
+            return profiles_ui.ProfilesEditor.detection_text()
 
     def test_gnome_without_window_calls_says_so(self):
-        note = self.note(frontapp._gnome, gnome_extension_installed=lambda: False)
-        self.assertIn("Window Calls", note)
-        self.assertNotIn("Window Calls", self.note(
-            frontapp._gnome, gnome_extension_installed=lambda: True))
+        """Only once a lookup has heard D-Bus say the interface is missing,
+        not from a guess at a folder name."""
+        self.assertIn("Window Calls", self.note(frontapp._gnome, present=False))
+        self.assertNotIn("Window Calls", self.note(frontapp._gnome, present=True))
+        self.assertNotIn("Window Calls", self.note(frontapp._gnome, present=None))
+
+    def test_a_failed_lookup_records_that_the_extension_is_missing(self):
+        failed = subprocess.CompletedProcess(
+            [], 1, stdout="",
+            stderr="Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: No such object")
+        with mock.patch.dict(frontapp.gnome_extension, {"present": None}), \
+                mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/gdbus"), \
+                mock.patch.object(frontapp.subprocess, "run", return_value=failed):
+            self.assertIs(frontapp.probe_gnome(), False)
+        ok = finished("('[]',)")
+        with mock.patch.dict(frontapp.gnome_extension, {"present": None}), \
+                mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/gdbus"), \
+                mock.patch.object(frontapp.subprocess, "run", return_value=ok):
+            self.assertIs(frontapp.probe_gnome(), True)
 
     def test_the_gnome_note_is_translated(self):
         from dikte import i18n
         i18n.set_language("tr")
-        note = self.note(frontapp._gnome, gnome_extension_installed=lambda: False)
-        self.assertIn("eklentisi kurulu olmalı", note)
+        self.assertIn("eklentisi kurulu olmalı", self.note(frontapp._gnome, present=False))
 
     def test_an_unknown_desktop_says_profiles_are_not_available(self):
         self.assertIn("not available on this desktop", self.note(frontapp._unknown))
