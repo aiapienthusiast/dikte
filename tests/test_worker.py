@@ -658,6 +658,29 @@ class ProfileChain(ChainBase):
         lookup.result.assert_called_once_with()
         self.assertEqual(cfg.read_history()[0]["profile"], "Email")
 
+    def test_the_lookup_is_awaited_after_transcription(self):
+        """Transcription needs no profile, so its round trip covers the wait."""
+        choice = self.profiled(profiles=[{"name": "Email", "apps": ["thunderbird"]}])
+        order = []
+        lookup = mock.Mock()
+        lookup.result.side_effect = lambda: order.append("profile") or choice
+        with mock.patch.object(api, "transcribe_detected",
+                               side_effect=lambda *a, **k: order.append("heard")
+                               or ("uh, hi", "en")):
+            pipeline = worker.Pipeline(self.conf)
+            with mock.patch.object(api, "cleanup", return_value="Hi."), \
+                    mock.patch.object(paste, "copy"), mock.patch.object(paste, "press"), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                pipeline._work(self.wav, 2.0, self.rms, False, None, None, None, lookup)
+        self.assertEqual(order, ["heard", "profile"])
+
+    def test_a_failure_before_cleanup_still_resolves_the_profile(self):
+        choice = self.profiled(profiles=[{"name": "Email", "apps": ["thunderbird"]}])
+        lookup = mock.Mock()
+        lookup.result.return_value = choice
+        self.run_chain(profile=lookup, transcribe_error=api.ApiError("bad key"))
+        self.assertEqual(cfg.read_history()[0]["profile"], "Email")
+
     def test_a_skipped_lookup_names_no_program(self):
         self.conf["profiles"] = [{"name": "Email", "apps": []}]
         self.run_chain(profile=profiles.choose(self.conf, ""))

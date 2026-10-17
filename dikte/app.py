@@ -165,10 +165,17 @@ class _ProfileLookup:
         if self._thread is not None:
             self._thread.join(self.WAIT)
             if self._thread.is_alive():
-                # Still asking: the Default profile, said so in the history
-                # like any other program that could not be found out.
                 self._thread = None
-                self._choose("")
+                try:
+                    fallback = profiles.choose(self._conf, "", True)
+                except Exception:
+                    fallback = None
+                with self._lock:
+                    # Still asking: the Default profile, said so in the history
+                    # like any other program that could not be found out. Unless
+                    # the answer landed in the moment since the wait ended.
+                    if self._choice is None:
+                        self._choice = fallback
         with self._lock:
             self._settled = True
             return self._choice

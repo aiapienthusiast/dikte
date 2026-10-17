@@ -178,11 +178,6 @@ class Pipeline(QObject):
         conf = self.conf
         if ask:
             profile = None
-        elif hasattr(profile, "result"):
-            # A lookup still working out the program in front, handed over by
-            # app.py so that the main thread never waits on it. This thread
-            # may: the transcript is not ready to clean up before it anyway.
-            profile = profile.result()
         started = time.monotonic()
         raw = ""
         # The row this run has written, so a failure after it (the clipboard
@@ -259,6 +254,9 @@ class Pipeline(QObject):
             # ask path runs cleanup under a different setting, and the record
             # should say what happened, not what one of the two gates implies.
             cleaned = False
+            # Only now: transcription does not need the profile, so a lookup
+            # still running has had the whole round trip to finish.
+            profile = self._resolved(profile)
             # A translation is the cleanup model's job too, so asking for one
             # runs that step even with cleanup switched off; the prompt then
             # translates without tidying (see Config.cleanup_prompt).
@@ -445,7 +443,15 @@ class Pipeline(QObject):
             model = ""
         return self._give_up(wav_path, message, duration, model, retry, profile)
 
+    @staticmethod
+    def _resolved(profile):
+        """A lookup still working out the program in front, handed over by
+        app.py so that the main thread never waits on it, becomes its Choice.
+        This thread may wait."""
+        return profile.result() if hasattr(profile, "result") else profile
+
     def _give_up(self, wav_path, message, duration, model, retry, profile=None):
+        profile = self._resolved(profile)
         """Keep the audio and record the dictation as failed, so the history
         shows it with a way to try again. A retry that failed once more updates
         its own row instead of adding another."""

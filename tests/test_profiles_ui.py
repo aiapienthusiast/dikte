@@ -54,6 +54,16 @@ class Dictionary(DikteTest):
         editor.search.setText("claude")
         self.assertEqual(editor.visible(), [1])
 
+    def test_turkish_dotted_capitals_count_as_the_same_word(self):
+        editor = self.editor(self.config())
+        editor.add_entry("İstanbul")
+        self.assertFalse(editor.add_entry("istanbul"))
+
+    def test_the_second_of_two_equal_terms_can_be_edited(self):
+        editor = self.editor(self.config(transcribe_prompt="Dikte, dikte"))
+        self.assertTrue(editor.edit_entry(1, "dikte", "DIKTE"))
+        self.assertEqual(editor.entries()[1]["spelling"], "DIKTE")
+
     def test_an_auto_entry_corrected_by_hand_is_manual(self):
         editor = self.editor(self.config())
         editor.add_entry("Claud", source=dictionary.AUTO)
@@ -215,10 +225,26 @@ class Profiles(DikteTest):
     def test_a_late_answer_to_an_older_question_is_dropped(self):
         editor = self.editor(self.config())
         editor._asked = 2
-        editor._found(1, "firefox")
+        editor._found((id(editor), 1), "firefox")
         self.assertEqual(editor.found.text(), "")
-        editor._found(2, "slack")
+        editor._found((id(editor) + 1, 2), "firefox")
+        self.assertEqual(editor.found.text(), "")
+        editor._found((id(editor), 2), "slack")
         self.assertEqual(editor.found.text(), "In front: slack")
+
+    def test_the_answer_goes_through_a_relay_that_outlives_the_editor(self):
+        editor = self.editor(self.config())
+        relay = profiles_ui._relay()
+        with mock.patch.object(profiles_ui.threading, "Thread") as thread, \
+                mock.patch.object(frontapp, "program_name", return_value="slack"):
+            editor._show_found()
+            work = thread.call_args.kwargs["target"]
+        editor.deleteLater()
+        QApplication.processEvents()
+        with mock.patch.object(frontapp, "program_name", return_value="slack"):
+            work()  # the editor is gone; the relay is not
+        QApplication.processEvents()
+        self.assertIs(profiles_ui._relay(), relay)
 
 
 class HistoryMarks(DikteTest):

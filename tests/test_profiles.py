@@ -315,6 +315,14 @@ class Lookup(DikteTest):
                 mock.patch.object(app._ProfileLookup, "WAIT", 0.05):
             choice = app._ProfileLookup(conf, None).result()
         self.assertEqual((choice.name, choice.program), ("", ""))
+        # An answer landing just after the wait gave up is still the answer.
+        lookup = app._ProfileLookup(conf, None)
+        real = profiles.choose(conf, "slack", True)
+        thread = mock.Mock()
+        thread.is_alive.return_value = True
+        thread.join.side_effect = lambda _t: setattr(lookup, "_choice", real)
+        lookup._thread = thread
+        self.assertIs(lookup.result(), real)
         # Answering late changes nothing already handed out.
         lookup = app._ProfileLookup(conf, None)
         lookup._settled = True

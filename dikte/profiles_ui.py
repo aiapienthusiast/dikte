@@ -12,7 +12,7 @@ anything having been edited.
 import copy
 import threading
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
@@ -37,6 +37,23 @@ STYLE_LABELS = {
     "brevity": ("Brevity", {"concise": "Concise",
                             "complete": "Keep the full phrasing"}),
 }
+
+
+class _Relay(QObject):
+    """Where a program lookup reports back. One for the whole application and
+    never deleted, so a thread finishing after its editor has gone emits on
+    something that still exists; the editor's own connection goes with it."""
+
+    found = pyqtSignal(object, str)
+
+
+_RELAY = []
+
+
+def _relay():
+    if not _RELAY:
+        _RELAY.append(_Relay())
+    return _RELAY[0]
 
 
 def owned(widget):
@@ -240,8 +257,10 @@ class DictionaryEditor(QWidget):
         old = self._entries[index]
         if (old["term"], old["spelling"]) == (record["term"], record["spelling"]):
             return True
-        other = self._index(record["term"])
-        if other is not None and other != index:
+        # Only a change of word can collide: two equal terms migrated from the
+        # old text stay editable, each one on its own.
+        renamed = dictionary._key(record["term"]) != dictionary._key(old["term"])
+        if renamed and self._index(record["term"], skip=index) is not None:
             return False
         record["breaks"] = old.get("breaks", 0)
         self._entries[index] = record
@@ -279,10 +298,12 @@ class DictionaryEditor(QWidget):
         self._show()
         self.changed.emit()
 
-    def _index(self, term):
-        key = term.casefold()
+    def _index(self, term, skip=None):
+        """The first other record with this term, folded the way the
+        dictionary folds it (Turkish's dotted I included)."""
+        key = dictionary._key(term)
         for i, record in enumerate(self._entries):
-            if record["term"].casefold() == key:
+            if i != skip and dictionary._key(record["term"]) == key:
                 return i
         return None
 
@@ -343,7 +364,6 @@ class ProfilesEditor(QWidget):
     """The Default profile, the named ones, and the switches over all of them."""
 
     changed = pyqtSignal()
-    _found_signal = pyqtSignal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -474,7 +494,7 @@ class ProfilesEditor(QWidget):
         self._find_timer = QTimer(self)
         self._find_timer.setSingleShot(True)
         self._find_timer.timeout.connect(self._show_found)
-        self._found_signal.connect(self._found)
+        _relay().found.connect(self._found)
         self._asked = 0
 
     # ---- the form ---------------------------------------------------------
@@ -715,21 +735,17 @@ class ProfilesEditor(QWidget):
         """Ask on a thread of its own: the asking is up to three subprocesses,
         and this is the main thread. The answer comes back through a signal."""
         self._asked += 1
-        asked = self._asked
+        asked, relay = (id(self), self._asked), _relay()
 
         def work():
-            name = frontapp.program_name()
-            try:
-                self._found_signal.emit(asked, name)
-            except RuntimeError:
-                pass  # the window went away while the question was out
+            relay.found.emit(asked, frontapp.program_name())
 
         threading.Thread(target=work, daemon=True).start()
 
     def _found(self, asked, name):
-        # Only the newest question's answer: a slow earlier one must not land
-        # on top of it.
-        if asked != self._asked:
+        # Only this editor's newest question: a slow earlier one must not land
+        # on top of it, and another editor's is not this one's to show.
+        if asked != (id(self), self._asked):
             return
         self.found.setText(t("In front: {name}", name=name) if name
                            else t("The program in front could not be found out."))
