@@ -123,6 +123,11 @@ class Choosing(DikteTest):
         conf = self.config(profiles=[{"name": "Term", "apps": ["konsole"]}])
         self.assertEqual(profiles.choose(conf, "org.kde.konsole").name, "Term")
 
+    def test_a_two_part_name_is_not_cut_down(self):
+        conf = self.config(profiles=[{"name": "Calc", "apps": ["calc", "12"]}])
+        self.assertEqual(profiles.choose(conf, "libreoffice.calc").name, "")
+        self.assertEqual(profiles.choose(conf, "python3.12").name, "")
+
     def test_malformed_profiles_do_not_break_anything(self):
         conf = self.config(profiles=["junk", {"name": ""}, {"name": "A", "apps": 3,
                                                             "style": "x"},
@@ -310,3 +315,9 @@ class Lookup(DikteTest):
                 mock.patch.object(app._ProfileLookup, "WAIT", 0.05):
             choice = app._ProfileLookup(conf, None).result()
         self.assertEqual((choice.name, choice.program), ("", ""))
+        # Answering late changes nothing already handed out.
+        lookup = app._ProfileLookup(conf, None)
+        lookup._settled = True
+        lookup._choice = choice
+        lookup._choose("slack")
+        self.assertIs(lookup._choice, choice)

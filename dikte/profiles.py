@@ -283,8 +283,13 @@ def for_program(conf, program):
     if not key:
         return None
     # A Wayland window class is often the application id, org.kde.konsole or
-    # org.mozilla.firefox, while people write the short name: both match.
-    keys = {key, key.rsplit(".", 1)[-1]} if " " not in key else {key}
+    # org.mozilla.firefox, while people write the short name: both match. Only
+    # for an id of three parts or more, so libreoffice.calc does not answer to
+    # "calc" and python3.12 not to "12".
+    keys = {key}
+    parts = key.split(".")
+    if " " not in key and len(parts) >= 3 and all(parts):
+        keys.add(parts[-1])
     for profile in named_profiles(conf):
         if keys & set(profile["apps"]):
             return profile

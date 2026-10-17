@@ -102,7 +102,8 @@ class Pipeline(QObject):
         `wav_path` is. Its outcome takes that row's place rather than adding a
         new one. False when that recording is already being retried.
 
-        `profile` is the profiles.Choice the recording was started under,
+        `profile` is the profiles.Choice the recording was started under, or
+        app.py's lookup that will produce one (anything with a result()),
         carried with the job so a queued run keeps it. None for the agent,
         which no profile ever shapes."""
         with self._jobs_lock:

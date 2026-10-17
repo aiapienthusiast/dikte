@@ -212,6 +212,14 @@ class Profiles(DikteTest):
         QApplication.processEvents()
         self.assertEqual(editor.found.text(), "In front: slack")
 
+    def test_a_late_answer_to_an_older_question_is_dropped(self):
+        editor = self.editor(self.config())
+        editor._asked = 2
+        editor._found(1, "firefox")
+        self.assertEqual(editor.found.text(), "")
+        editor._found(2, "slack")
+        self.assertEqual(editor.found.text(), "In front: slack")
+
 
 class HistoryMarks(DikteTest):
     def test_a_row_without_profiles_says_nothing_more(self):

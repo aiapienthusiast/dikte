@@ -343,7 +343,7 @@ class ProfilesEditor(QWidget):
     """The Default profile, the named ones, and the switches over all of them."""
 
     changed = pyqtSignal()
-    _found_signal = pyqtSignal(str)
+    _found_signal = pyqtSignal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -475,6 +475,7 @@ class ProfilesEditor(QWidget):
         self._find_timer.setSingleShot(True)
         self._find_timer.timeout.connect(self._show_found)
         self._found_signal.connect(self._found)
+        self._asked = 0
 
     # ---- the form ---------------------------------------------------------
 
@@ -713,9 +714,22 @@ class ProfilesEditor(QWidget):
     def _show_found(self):
         """Ask on a thread of its own: the asking is up to three subprocesses,
         and this is the main thread. The answer comes back through a signal."""
-        threading.Thread(target=lambda: self._found_signal.emit(
-            frontapp.program_name()), daemon=True).start()
+        self._asked += 1
+        asked = self._asked
 
-    def _found(self, name):
+        def work():
+            name = frontapp.program_name()
+            try:
+                self._found_signal.emit(asked, name)
+            except RuntimeError:
+                pass  # the window went away while the question was out
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _found(self, asked, name):
+        # Only the newest question's answer: a slow earlier one must not land
+        # on top of it.
+        if asked != self._asked:
+            return
         self.found.setText(t("In front: {name}", name=name) if name
                            else t("The program in front could not be found out."))

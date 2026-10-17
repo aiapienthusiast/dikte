@@ -134,6 +134,10 @@ class _ProfileLookup:
         self._front = front
         self._choice = None
         self._thread = None
+        # Once result() has answered, a lookup finishing late changes nothing:
+        # the dictation has already gone ahead under that answer.
+        self._lock = threading.Lock()
+        self._settled = False
         try:
             detect = profiles.wants_detection(conf)
         except Exception:
@@ -146,9 +150,13 @@ class _ProfileLookup:
 
     def _choose(self, program, looked=True):
         try:
-            self._choice = profiles.choose(self._conf, program, looked)
+            choice = profiles.choose(self._conf, program, looked)
         except Exception as exc:  # a profile is never worth a dictation
             print(f"dikte: could not choose a profile: {exc}", file=sys.stderr)
+            return
+        with self._lock:
+            if not self._settled:
+                self._choice = choice
 
     def _look(self):
         self._choose(frontapp.program_name(self._front))
@@ -161,7 +169,9 @@ class _ProfileLookup:
                 # like any other program that could not be found out.
                 self._thread = None
                 self._choose("")
-        return self._choice
+        with self._lock:
+            self._settled = True
+            return self._choice
 
 
 class Dikte:
