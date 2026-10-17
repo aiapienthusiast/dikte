@@ -294,3 +294,17 @@ class Owned(DikteTest):
         self.assertEqual(conf["profile_default"],
                          {"style": {"formality": "formal"}, "junk": 1})
         self.assertFalse(cfg.CONFIG_FILE.exists())
+
+
+class CorrectionEntries(DikteTest):
+    def test_an_entry_from_a_correction_says_what_it_was_heard_as(self):
+        editor = profiles_ui.DictionaryEditor()
+        self.addCleanup(editor.deleteLater)
+        editor.load(self.config())
+        editor._entries.append(dictionary.entry("klod kod", "Claude Code", dictionary.AUTO))
+        editor._show()
+        self.assertEqual(editor.table.item(0, 2).text(), "Auto, heard as: klod kod")
+        editor.edit_entry(0, "klod kod", "Claude-Code")
+        self.assertEqual(editor.entries()[0]["spelling"], "Claude-Code")
+        editor.delete_entries([0])
+        self.assertEqual(editor.entries(), [])

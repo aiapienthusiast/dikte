@@ -193,10 +193,12 @@ class DictionaryEditor(QWidget):
             "cleaned up and finished without a warning: never meetings, files, "
             "the agent, translations, the clipboard or other programs. A name "
             "written with a capital in the middle of a sentence is added after "
-            "it has come through three dictations unchanged, marked Auto; until "
-            "then the names being counted are kept in the dictionary file. A "
-            "learned name you delete is not learned again. Nothing is sent "
-            "anywhere to do this.")))
+            "it has come through three dictations unchanged, marked Auto. So is a "
+            "misheard word the cleanup puts right the same way three times "
+            "(Klod Kod to Claude Code), with what it was heard as. Until then "
+            "what is being counted is kept in the dictionary file. A learned "
+            "entry you delete is not learned again. Nothing is sent anywhere to "
+            "do this.")))
 
     # ---- the form ---------------------------------------------------------
 
@@ -355,8 +357,14 @@ class DictionaryEditor(QWidget):
         self.table.setRowCount(len(shown))
         for row, index in enumerate(shown):
             record = self._entries[index]
-            cells = (record["term"], record["spelling"],
-                     t("Auto") if record["source"] == dictionary.AUTO else t("Manual"))
+            if record["source"] != dictionary.AUTO:
+                source = t("Manual")
+            elif record["spelling"]:
+                # Learned from a correction: the term is what was heard.
+                source = t("Auto, heard as: {heard}", heard=record["term"])
+            else:
+                source = t("Auto")
+            cells = (record["term"], record["spelling"], source)
             for column, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setData(Qt.ItemDataRole.UserRole, index)
