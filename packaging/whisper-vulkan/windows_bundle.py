@@ -22,8 +22,9 @@ deployment). A static runtime would give every DLL in the bundle a CRT and a
 heap of its own, and ggml hands memory and FILE handles across those DLLs.
 The Universal CRT is part of Windows 10 and later and is not shipped.
 
-Reproducibility is weaker than on Linux. /Brepro removes the link timestamps
-and the zip is written with fixed dates and order, so two runs on the same
+Reproducibility is weaker than on Linux. /Brepro removes the link timestamps,
+/d1trimfile the build directory, and the zip is written with fixed dates and
+order, so two runs on the same
 runner image give the same digest, but nothing pins the compiler: a runner
 image update that brings a new MSVC changes the bytes. The published archive
 is the artifact, not something that can be rebuilt on demand years later.
@@ -317,8 +318,8 @@ def _cache_value(build, key):
     return found.group(1).strip() if found else ""
 
 
-def _redist_dir():
-    """The x64 CRT folder of the Visual Studio the build used."""
+def _visual_studio():
+    """The installation path of the Visual Studio the build uses."""
     vswhere = (pathlib.Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
                / "Microsoft Visual Studio" / "Installer" / "vswhere.exe")
     install = subprocess.run(
@@ -328,7 +329,18 @@ def _redist_dir():
         check=True, capture_output=True, text=True).stdout.strip()
     if not install:
         raise SystemExit("no Visual Studio with the x64 C++ tools found")
-    install = pathlib.Path(install)
+    return pathlib.Path(install)
+
+
+def _msvc_version():
+    """The default MSVC toolset, which is what the build compiled with."""
+    return (_visual_studio() / "VC" / "Auxiliary" / "Build"
+            / "Microsoft.VCToolsVersion.default.txt").read_text().strip()
+
+
+def _redist_dir():
+    """The x64 CRT folder of the Visual Studio the build used."""
+    install = _visual_studio()
     version = (install / "VC" / "Auxiliary" / "Build"
                / "Microsoft.VCRedistVersion.default.txt").read_text().strip()
     folders = sorted((install / "VC" / "Redist" / "MSVC" / version / "x64")
@@ -380,11 +392,16 @@ def build(args):
     environment = dict(os.environ)
     # /Brepro replaces the link timestamp in every PE header with a hash of
     # the contents, without which no two builds would ever share a digest.
+    # /d1trimfile drops the source copy's directory from __FILE__, which
+    # ggml's asserts compile in, so a build in another directory gives the
+    # same bytes: MSVC's counterpart of -fmacro-prefix-map on Linux. It is
+    # an undocumented switch, so a compiler that drops it changes the digest.
     # Through the environment rather than CMAKE_<LANG>_FLAGS, which would
     # replace CMake's MSVC defaults (/EHsc among them) instead of adding to
     # them.
-    for name in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
-        environment[name] = "/Brepro"
+    trim = f"/Brepro /d1trimfile:{copy}{os.sep}"
+    environment["CFLAGS"] = environment["CXXFLAGS"] = trim
+    environment["LDFLAGS"] = "/Brepro"
     environment["SOURCE_DATE_EPOCH"] = str(epoch)
     _run(["cmake", "-S", copy, "-B", build_dir, "-A", "x64",
           "-DCMAKE_BUILD_TYPE=Release",
@@ -429,10 +446,10 @@ def build(args):
                                                os.environ.get("ImageVersion", "")))),
         "cmake": cmake_version,
         "cmake_generator": _cache_value(build_dir, "CMAKE_GENERATOR"),
-        "msvc": _cache_value(build_dir, "CMAKE_CXX_COMPILER_VERSION")
-                or _cache_value(build_dir, "CMAKE_CXX_COMPILER"),
+        "msvc": _msvc_version(),
         "vulkan_sdk": pathlib.Path(vulkan_sdk).name,
-        "cmake_flags": list(CMAKE_FLAGS) + ["C/CXX/LD flags: /Brepro"],
+        "cmake_flags": list(CMAKE_FLAGS) + ["C/CXX flags: /Brepro /d1trimfile:<source>",
+                                          "LD flags: /Brepro"],
         "runtime_contract": {
             "required": ["x86_64 Windows 10 or later",
                          "Universal CRT (part of Windows 10 and later)"],
@@ -490,10 +507,17 @@ def validate(args):
                 raise SystemExit(f"{required} is missing from the archive")
         if not any(CPU_BACKENDS.fullmatch(path.name) for path in root.iterdir()):
             raise SystemExit("no ggml-cpu backend in the archive")
+        listed = set()
         for line in (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
             digest, _, relative = line.partition("  ")
             if sha256(root / relative) != digest:
                 raise SystemExit(f"SHA256SUMS does not match {relative}")
+            listed.add(relative.removeprefix("./"))
+        present = {path.relative_to(root).as_posix() for path in root.rglob("*")
+                   if path.is_file() and path.name != "SHA256SUMS"}
+        if listed != present:
+            raise SystemExit("SHA256SUMS does not cover exactly the archive: "
+                             f"{sorted(listed ^ present)}")
         problems = import_problems(root)
         if problems:
             raise SystemExit("\n".join(problems))
@@ -501,16 +525,23 @@ def validate(args):
     print("structure: PASS")
 
 
+def _require(condition, message):
+    # Not assert, which python -O strips.
+    if not condition:
+        raise SystemExit(message)
+
+
 def _check_sbom(root, source):
     with open(root / f"{ASSET}.cdx.json", encoding="utf-8") as stream:
         document = json.load(stream)
-    assert document["bomFormat"] == "CycloneDX"
-    assert document["specVersion"] == "1.6"
-    assert document["metadata"]["component"]["name"] == "whisper-server"
+    _require(document["bomFormat"] == "CycloneDX", "SBOM is not CycloneDX")
+    _require(document["specVersion"] == "1.6", "SBOM is not CycloneDX 1.6")
+    _require(document["metadata"]["component"]["name"] == "whisper-server",
+             "SBOM does not describe whisper-server")
     names = {component["name"] for component in document["components"]}
     for name in ("ggml", "cpp-httplib", "json", "whisper-server.exe",
                  VULKAN_BACKEND):
-        assert name in names, name
+        _require(name in names, f"SBOM does not list {name}")
     if source is not None:
         cmake = (source / "ggml" / "CMakeLists.txt").read_text(encoding="utf-8")
         ggml = ".".join(re.search(rf"set\(GGML_VERSION_{part}\s+([0-9]+)\)",
@@ -518,7 +549,8 @@ def _check_sbom(root, source):
                         for part in ("MAJOR", "MINOR", "PATCH"))
         component = next(component for component in document["components"]
                          if component["name"] == "ggml")
-        assert component["version"] == ggml, (component["version"], ggml)
+        _require(component["version"] == ggml,
+                 f"SBOM says ggml {component['version']}, source says {ggml}")
     print("SBOM components:", len(document["components"]))
 
 

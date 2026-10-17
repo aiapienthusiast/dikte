@@ -366,6 +366,16 @@ jobs:
           sha256sum --check whisper-bin-ubuntu-vulkan-x64.tar.gz.sha256
           sha256sum --check whisper-bin-win-vulkan-x64.zip.sha256
 
+      - name: Schema-validate the Windows CycloneDX 1.6 SBOM
+        # Here rather than on the Windows runner, which cannot run this
+        # Linux image.
+        run: |
+          docker run --rm \
+            -v "$PWD/dist/whisper-bin-win-vulkan-x64.cdx.json:/sbom.json:ro" \
+            cyclonedx/cyclonedx-cli@sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7 \
+            validate --input-file /sbom.json --input-format json \
+            --input-version v1_6 --fail-on-errors
+
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:

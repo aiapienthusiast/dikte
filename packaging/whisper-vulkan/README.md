@@ -53,10 +53,6 @@ produces a different digest. Treat the published archive as the artifact, not
 as something reproducible on demand: a version bump means building,
 validating, reviewing the new digest and updating the pinned tuple together.
 
-Windows is weaker still. There is no container to pin, so the build runs on
-`windows-latest` with whatever MSVC that image carries, and BUILD-INFO.json
-records both. Two runs on the same image give the same digest; an image update
-can change it. The runner has no GPU either, so CI proves only that the
-archive starts and transcribes on the processor without a Vulkan driver. The
-Vulkan path needs somebody with a card to try it before a digest is
-reviewed.
+Windows is weaker still: an update of the `windows-latest` image can change
+the digest, and its runner has no GPU, so somebody with a card has to try the
+Vulkan path before a digest is reviewed. `windows_bundle.py` says why.
