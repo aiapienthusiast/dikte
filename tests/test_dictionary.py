@@ -175,11 +175,14 @@ class Learning(DikteTest):
         # Seen again, it is already known.
         self.assertEqual(self.learn(conf, text, times=3), [])
 
-    def test_a_word_the_cleanup_made_up_is_not_learned(self):
+    def test_a_word_the_cleanup_put_in_is_not_learned_as_a_name(self):
+        """Not a name heard as itself: what is learned is the correction, with
+        what the transcriber heard beside it."""
         conf = self.config()
         added = self.learn(conf, "I asked Claude about it.", times=3,
                            raw="I asked cloud about it.")
-        self.assertEqual(added, [])
+        self.assertEqual([(r["term"], r["spelling"]) for r in added],
+                         [("cloud", "Claude")])
 
     def test_german_capitals_say_nothing(self):
         conf = self.config()
@@ -307,3 +310,67 @@ class Learning(DikteTest):
         self.learn(conf, "It runs on OpenFrame now.", 3)
         self.assertFalse(cfg.CONFIG_FILE.exists())
         self.assertEqual(conf.dictionary_hint(), "Paraşüt, OpenFrame")
+
+
+class Corrections(DikteTest):
+    """Spellings learned from what the cleanup keeps putting right."""
+
+    def learn(self, conf, raw, text, times=1):
+        added = []
+        for _ in range(times):
+            added += dictionary.learn(conf, raw, text, "en")
+        return added
+
+    def test_a_misheard_name_and_its_spelling_are_found(self):
+        self.assertEqual(dictionary.corrections("we tried klod kod yesterday",
+                                                "We tried Claude Code yesterday."),
+                         [("klod kod", "Claude Code")])
+        self.assertEqual(dictionary.corrections("deploy it on cubernetis now",
+                                                "Deploy it on Kubernetes now."),
+                         [("cubernetis", "Kubernetes")])
+
+    def test_what_is_not_a_correction(self):
+        for raw, text in (
+            ("i gonna send it", "I am going to send it."),        # grammar
+            ("send it to ahmet", "Send it to Ahmet."),             # case only
+            ("we use node js", "We use node.js."),                 # punctuation only
+            ("send it to ahmete", "Send it to Ahmet'e."),          # suffix only
+            ("ask ahmeti about it", "Ask Ahmet about it."),        # suffix dropped
+            ("so we did it uh", "We did it."),                     # words dropped
+            ("we did it", "We did it with OpenFrame."),            # words added
+            ("the thing we talked", "OpenFrame we talked."),       # a rewrite
+            ("we are in istanbul", "We are in İstanbul."),         # diacritic only
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(dictionary.corrections(raw, text), [])
+
+    def test_three_sightings_make_an_entry_with_what_it_was_heard_as(self):
+        conf = self.config()
+        raw, text = "we tried klod kod yesterday", "We tried Claude Code yesterday."
+        self.assertEqual(self.learn(conf, raw, text, 2), [])
+        added = self.learn(conf, raw, text)
+        self.assertEqual([(r["term"], r["spelling"], r["source"]) for r in added],
+                         [("klod kod", "Claude Code", "auto")])
+        self.assertIn("Claude Code", conf.dictionary_hint())
+        self.assertNotIn("klod", conf.dictionary_hint())
+        self.assertIn("klod kod -> Claude Code", conf.dictionary_glossary())
+        self.assertEqual(self.learn(conf, raw, text, 3), [])
+
+    def test_a_listed_or_refused_spelling_is_not_learned_again(self):
+        conf = self.config(transcribe_prompt="Claude Code")
+        raw, text = "we tried klod kod yesterday", "We tried Claude Code yesterday."
+        self.assertEqual(self.learn(conf, raw, text, 3), [])
+        conf = self.config()
+        dictionary._write([], {}, "", rejected=["klod kod"])
+        self.assertEqual(self.learn(conf, raw, text, 3), [])
+
+    def test_counting_is_forgotten_like_names(self):
+        conf = self.config()
+        self.learn(conf, "we tried klod kod", "We tried Claude Code.")
+        self.learn(conf, "it runs on cubernetis", "It runs on Kubernetes.")
+        cfg.delete_history([{"raw": "we tried klod kod", "text": "We tried Claude Code."}])
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertEqual(list(stored["pending"]), ["cubernetis -> Kubernetes"])
+        cfg.clear_history()
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertEqual(stored["pending"], {})

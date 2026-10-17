@@ -29,10 +29,12 @@ the lines it was typed in.
 """
 
 import copy
+import difflib
 import json
 import os
 import re
 import threading
+import unicodedata
 
 from . import config as cfg
 
@@ -389,8 +391,11 @@ def forget_pending(texts=None):
             rows = [_joined(_tokens(t)) for t in texts if isinstance(t, str)]
             pending = {}
             for term, value in stored["pending"].items():
-                words = _tokens(term)
-                if not words or not any(_joined(words) in row for row in rows):
+                # A correction waits as "heard -> spelling": it goes when a
+                # deleted row held either side of it.
+                sides = [_tokens(side) for side in term.split(PAIR)]
+                if not any(words and any(_joined(words) in row for row in rows)
+                           for words in sides):
                     pending[term] = value
             if len(pending) == len(stored["pending"]):
                 return
@@ -508,6 +513,106 @@ def candidates(text):
     return [term for term, starts in runs(text) if not starts]
 
 
+# --- corrections --------------------------------------------------------------
+#
+# The second thing learning reads: a misheard word that the cleanup keeps
+# putting right. "Klod Kod" in the transcript and "Claude Code" in the text,
+# three dictations running, is a spelling worth keeping, with what it was
+# heard as: the hint then asks for the spelling and the glossary maps the one
+# to the other. Only a swap of a few words for a name or a term counts; the
+# grammar, the punctuation and the filler the cleanup also changes do not.
+
+# How a correction waits among the pending names: "heard -> spelling".
+PAIR = " -> "
+# Words on either side of a correction, at most.
+CORRECTION_WORDS = 4
+# How alike the two sides must sound, from 0 to 1. A misheard name sounds like
+# itself; a rewrite of the sentence does not.
+CORRECTION_LIKENESS = 0.6
+
+_SOUNDS = (("ph", "f"), ("ck", "k"), ("c", "k"), ("q", "k"), ("x", "ks"),
+           ("w", "v"), ("y", "i"), ("au", "o"), ("ou", "u"), ("ee", "i"),
+           ("oo", "u"))
+
+
+def _plain(text):
+    """Folded, without accents or anything but letters and digits: two
+    spellings that differ only in case, punctuation, diacritics or the space
+    between the words come out the same."""
+    text = unicodedata.normalize("NFKD", fold(text).replace("ı", "i"))
+    return "".join(c for c in text if c.isalnum())
+
+
+def _sound(words):
+    """A rough sound of some words, so that Klod Kod and Claude Code meet:
+    the spellings English and Turkish write the same sound with, doubled
+    letters single, and a silent final e gone."""
+    out = []
+    for word in words:
+        word = _plain(word)
+        for written, said in _SOUNDS:
+            word = word.replace(written, said)
+        word = re.sub(r"(.)\1+", r"\1", word)
+        if len(word) > 3 and word.endswith("e"):
+            word = word[:-1]
+        out.append(word)
+    return "".join(out)
+
+
+def _termlike(words, known):
+    """Whether a cleaned run of words is a name or a term rather than prose:
+    title or camel case, a digit or a dot (Node.js), or already listed."""
+    if _key(" ".join(words)) in known:
+        return True
+    return any(_titled(w) or any(c.isdigit() for c in w) or "." in w
+               for w in words)
+
+
+def corrections(raw, text, known=()):
+    """(heard, spelling) pairs: runs of up to four words the cleanup swapped
+    for a name or a term that sounds like them. Words it only added or only
+    dropped are not corrections, nor is a change of case, punctuation,
+    accents or a Turkish suffix (Ahmet'e for Ahmet)."""
+    heard = [m.group(0) for m in _WORD.finditer(raw)]
+    matches = list(_WORD.finditer(text))
+    written = [m.group(0) for m in matches]
+    found = []
+    matcher = difflib.SequenceMatcher(None, [_key(w) for w in heard],
+                                      [_key(w) for w in written], autojunk=False)
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op != "replace":
+            continue
+        before, after = heard[i1:i2], written[j1:j2]
+        if not (1 <= len(before) <= CORRECTION_WORDS
+                and 1 <= len(after) <= CORRECTION_WORDS):
+            continue
+        # A capital that only starts the sentence makes nothing a name.
+        gap = text[:matches[j1].start()].rstrip(" \t")
+        starts = not gap or gap[-1] in _SENTENCE_END
+        if starts and not any(_titled(w) for w in after[1:]) \
+                and not (any(c.isdigit() for c in after[0]) or "." in after[0]) \
+                and _key(" ".join(after)) not in known:
+            continue
+        if not _termlike(after, known) or any(_key(w) in COMMON for w in after):
+            continue
+        plain_before, plain_after = _plain(" ".join(before)), _plain(" ".join(after))
+        if plain_before == plain_after:
+            continue
+        # A suffix the cleanup took off or put on: Ahmeti and Ahmet.
+        shorter, longer = sorted((plain_before, plain_after), key=len)
+        if longer.startswith(shorter) and len(longer) - len(shorter) <= 4:
+            continue
+        likeness = max(
+            difflib.SequenceMatcher(None, plain_before, plain_after).ratio(),
+            difflib.SequenceMatcher(None, _sound(before), _sound(after)).ratio())
+        if likeness < CORRECTION_LIKENESS:
+            continue
+        pair = (" ".join(before), " ".join(after))
+        if pair not in found:
+            found.append(pair)
+    return found
+
+
 def learn(conf, raw, text, speech_language=""):
     """Count the names in one finished dictation, and learn the ones that have
     now been seen often enough. Returns the records added.
@@ -523,8 +628,6 @@ def learn(conf, raw, text, speech_language=""):
     heard = {_key(w) for w in _WORD.findall(raw)}
     found = [(term, starts) for term, starts in runs(text)
              if all(_key(w) in heard for w in term.split())]
-    if not found:
-        return []
     with _LOCK:
         current, stored, _ = _state(conf)
         stored = stored or _empty()
@@ -537,13 +640,26 @@ def learn(conf, raw, text, speech_language=""):
                 continue
             if term not in terms:
                 terms.append(term)
-        if not terms:
-            return []
         known = set(rejected)
         for record in current:
             known.add(_key(record["term"]))
             known.add(_key(hint_of(record)))
+        fixed = [(before, after) for before, after in corrections(raw, text, known)
+                 if _key(before) not in known and _key(after) not in known]
+        if not terms and not fixed:
+            return []
         added = []
+        for before, after in fixed:
+            key = before + PAIR + after
+            count = pending.get(key, [0, 0])[0] + 1
+            if count >= LEARN_AFTER:
+                pending.pop(key, None)
+                record = entry(before, after, AUTO)
+                current.append(record)
+                known.update((_key(before), _key(after)))
+                added.append(record)
+            else:
+                pending[key] = [count, clock]
         for term in terms:
             if _key(term) in known:
                 continue
