@@ -102,13 +102,12 @@ MANAGED_WHISPER_SHA256 = (
     "c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8"
 )
 # The Windows x64 bundle comes out of the same workflow and the same pinned
-# source, and is published in the release after the Linux one above. Its digest
-# is the empty placeholder until somebody has built that archive and reviewed
-# it: an unreviewed digest matches nothing, so until then every Windows machine
-# falls back to upstream's processor build exactly as Linux does when its
-# bundle is missing.
+# source, under a release tag of its own so either platform can be published
+# without the other. Its digest is the empty placeholder until somebody has
+# built that archive and reviewed it, and until then Windows installs exactly
+# what it did before the bundle existed.
 UNREVIEWED_DIGEST = ""
-MANAGED_WHISPER_WINDOWS_RELEASE = "whisper.cpp-v1.9.4"
+MANAGED_WHISPER_WINDOWS_RELEASE = "whisper.cpp-v1.9.4-windows"
 MANAGED_WHISPER_WINDOWS_VERSION = "v1.9.4"
 MANAGED_WHISPER_WINDOWS_VULKAN = "whisper-bin-win-vulkan-x64.zip"
 MANAGED_WHISPER_WINDOWS_SHA256 = UNREVIEWED_DIGEST
@@ -432,10 +431,15 @@ def _managed_whisper(program, tag=""):
     Linux or Windows on x86_64 with a Vulkan loader on it, and no version asked
     for by hand: a pinned version is upstream's to answer. Python on Windows
     calls the architecture AMD64.
+
+    A system whose bundle has no reviewed digest yet is not one: nothing is
+    published for it to fall back from, so its install must not be recorded
+    as a fallback, nor its card treated as out of reach.
     """
     return (not tag and program is WHISPER
             and sys.platform in ("linux", "win32")
             and platform.machine().lower() in ("x86_64", "amd64")
+            and _managed_bundle().sha256 not in ("", UNREVIEWED_DIGEST)
             and _has_vulkan())
 
 

@@ -2053,11 +2053,12 @@ class ManagedWhisperOnWindows(Local):
                                  self.reviewed)
 
     def test_the_placeholder_digest_means_fall_back(self):
-        """Nobody has reviewed a Windows archive yet. Until somebody does, the
-        managed bundle is refused without asking GitHub, and the upstream
-        BLAS build lands with the record saying it is the fallback."""
+        """Nobody has reviewed a Windows archive yet. Until somebody does,
+        Windows behaves exactly as before: GitHub is not asked for the bundle,
+        the upstream BLAS build lands, and nothing calls it a fallback."""
         self.assertEqual(ggml.UNREVIEWED_DIGEST,
                          ggml.MANAGED_WHISPER_WINDOWS_SHA256)
+        self.assertFalse(ggml._managed_whisper(ggml.WHISPER))
         upstream = self.release("v1.9.5", "whisper-blas-bin-x64.zip")
         with serving(upstream, self.archive) as calls:
             path = ggml.install_program(ggml.WHISPER)
@@ -2065,7 +2066,13 @@ class ManagedWhisperOnWindows(Local):
         self.assertFalse(any("yusufipk/dikte" in url for url in urls))
         self.assertTrue(urls[-1].endswith("whisper-blas-bin-x64.zip"))
         self.assertTrue(path.endswith("whisper-server.exe"))
-        self.assertTrue(ggml.vulkan_missing(ggml.WHISPER))
+        self.assertFalse(ggml.vulkan_missing(ggml.WHISPER))
+
+    def test_the_placeholder_digest_writes_no_backend_to_the_record(self):
+        upstream = self.release("v1.9.5", "whisper-blas-bin-x64.zip")
+        with serving(upstream, self.archive):
+            ggml.install_program(ggml.WHISPER)
+        self.assertNotIn("backend", ggml._read_record(ggml.WHISPER))
 
     def test_an_asset_published_without_a_digest_never_matches_the_placeholder(self):
         unsigned = self.release(ggml.MANAGED_WHISPER_WINDOWS_RELEASE,
