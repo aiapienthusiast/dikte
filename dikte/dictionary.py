@@ -706,7 +706,10 @@ def corrections(raw, text):
         # The widening stopped at a capitalised word that starts the
         # sentence: the name may run on into it ("Claude kod is great"), so
         # what is left is part of a name, and a part is not learned.
-        if j1 > 0 and _namey(written[j1 - 1]) and together(j1 - 1, j1):
+        # An everyday word that only has its capital for starting the
+        # sentence ("Try cloud code") is not part of the name, though.
+        if (j1 > 0 and _namey(written[j1 - 1]) and together(j1 - 1, j1)
+                and written_keys[j1 - 1] not in EVERYDAY):
             continue
         # A capital that only starts the sentence makes nothing a name.
         if begins(j1) and not any(_titled(w) for w in after[1:]) \
@@ -715,6 +718,10 @@ def corrections(raw, text):
         if not any(_namey(w) for w in after) or any(_key(w) in COMMON for w in after):
             continue
         if all(_key(w) in EVERYDAY for w in before):
+            continue
+        # The name was heard right, and only the words around it were
+        # rewritten ("on github" made "We use GitHub"): nothing to correct.
+        if {_key(w) for w in after if _namey(w)} <= {_key(w) for w in before}:
             continue
         # Said, just somewhere else: the cleanup moved it, it did not hear it.
         if _joined([_key(w) for w in after]) in heard_joined:
@@ -766,7 +773,8 @@ def learn(conf, raw, text, speech_language=""):
         for term, starts in found:
             if starts and term not in middle and _key(term) not in pending:
                 continue
-            if term not in terms:
+            # Once a dictation, however it was capitalised (GitHub, Github).
+            if _key(term) not in {_key(t) for t in terms}:
                 terms.append(term)
         known = set(rejected)
         for record in current:

@@ -471,3 +471,25 @@ class RefusingSpellings(DikteTest):
         rejected = dictionary._read_file()["rejected"]
         self.assertIn("klod kod", rejected)
         self.assertNotIn("claude code", rejected)
+
+
+class SentenceStartWords(DikteTest):
+    def test_an_everyday_first_word_does_not_stop_the_correction(self):
+        self.assertEqual(dictionary.corrections("try cloud code", "Try Claude Code."),
+                         [("cloud code", "Claude Code")])
+        self.assertEqual(dictionary.corrections("open klod kod now", "Open Claude Code now."),
+                         [("klod kod", "Claude Code")])
+
+    def test_a_name_cut_off_at_the_start_still_drops(self):
+        self.assertEqual(dictionary.corrections("claude kod is great",
+                                                "Claude Code is great."), [])
+
+    def test_one_term_counts_once_a_dictation_whatever_its_case(self):
+        conf = self.config()
+        dictionary.learn(conf, "we use github and github daily",
+                         "We use GitHub and Github daily.", "en")
+        stored = dictionary._read_file()
+        self.assertEqual(stored["pending"], {"github": [1, 1]})
+
+    def test_words_rewritten_around_a_name_heard_right_are_no_correction(self):
+        self.assertEqual(dictionary.corrections("on github", "We use GitHub."), [])
