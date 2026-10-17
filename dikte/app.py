@@ -828,10 +828,16 @@ class Dikte:
         self.ask_overlay.show_recording(asking=True)
         self._begin_recording(ASK)
         if not self.recorder.active:
-            self.assist_grab = None
+            self._drop_grab()
             return
         self._set_ask_state(RECORDING)
         self.cues.play("start")
+
+    def _drop_grab(self):
+        """A question that will not run: stop its copy if it has not happened."""
+        grab, self.assist_grab = getattr(self, "assist_grab", None), None
+        if grab is not None:
+            grab.cancel()
 
     def _begin_recording(self, owner):
         """One microphone, so one of the two holds it at a time."""
@@ -982,7 +988,7 @@ class Dikte:
         # The preference dies with the run it was given for.
         self.paste_override.pop(ASK if asking else DICTATION, None)
         if asking:
-            self.assist_grab = None
+            self._drop_grab()
         self.recorder_owner = None
         # What goes over the socket is read by a program as often as by a
         # person, so it stays in one language; only what a run itself said
@@ -1326,6 +1332,7 @@ class Dikte:
         # Apply is for an edit of something that was selected, on a desktop
         # that can press the paste for it. An answer is never offered it.
         can_apply = (payload.get("kind") == selection.EDIT and bool(selected)
+                     and len(selected) <= selection.MAX_CHARS
                      and paste.paste_ready())
         window = AnswerWindow(
             payload.get("instruction", ""), payload.get("text", ""),
@@ -1348,7 +1355,7 @@ class Dikte:
         owner, self.recorder_owner = self.recorder_owner, None
         self.paste_override.pop(owner, None)
         if owner == ASK:
-            self.assist_grab = None
+            self._drop_grab()
         self.ticker.stop()
         (self._on_ask_error if owner == ASK else self._on_error)(message)
 

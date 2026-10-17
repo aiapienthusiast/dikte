@@ -27,7 +27,6 @@ from .i18n import t
 KEYCODES = {
     "ctrl": 29, "control": 29, "shift": 42, "alt": 56, "super": 125, "meta": 125,
     "v": 47, "insert": 110, "enter": 28, "return": 28,
-    "c": 46,   # the copy a selection question reads the selection with
 }
 
 # xdotool speaks X keysyms, which spell some of those differently.
@@ -371,7 +370,6 @@ WIN_KEYCODES = {
     "ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12,
     "super": 0x5B, "meta": 0x5B,
     "v": 0x56, "insert": 0x2D, "enter": 0x0D, "return": 0x0D,
-    "c": 0x43,
 }
 _WIN_KEYUP = 0x0002        # KEYEVENTF_KEYUP
 _WIN_CF_UNICODETEXT = 13   # what the clipboard calls UTF-16 text

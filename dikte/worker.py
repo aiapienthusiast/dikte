@@ -290,8 +290,12 @@ class Pipeline(QObject):
                         on_stage=self.stage.emit,
                         should_stop=self._stop.is_set,
                         keep_session=False,
+                        # Selected text was not written by the user and may
+                        # carry instructions of its own.
+                        read_only=bool(selected.text),
+                        system=selection.SYSTEM_PROMPT,
                     )
-                    kind, text = selection.parse_reply(reply, bool(selected.text))
+                    kind, text = selection.parse_reply(reply, selected.text)
                 warning = "\n".join(x for x in (warning, denied) if x)
 
             wants_paste = (conf["assistant_paste"] if ask else conf["auto_paste"])

@@ -260,7 +260,15 @@ def working_dir(conf):
     return os.path.expanduser("~")
 
 
-def ask(prompt, conf, on_stage=None, should_stop=None, keep_session=True):
+# What a run that is reading somebody else's text may not touch, in Claude
+# Code's names: running commands, writing files, fetching pages (a fetched URL
+# can carry data out) and handing work to a subagent that might.
+CLAUDE_READ_ONLY_DENY = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch",
+                         "Task"]
+
+
+def ask(prompt, conf, on_stage=None, should_stop=None, keep_session=True,
+        read_only=False, system=None):
     """Run the prompt through the configured agent. Returns (answer, warning).
 
     `warning` is set when the answer arrived but something about the run should
@@ -270,11 +278,21 @@ def ask(prompt, conf, on_stage=None, should_stop=None, keep_session=True):
     `keep_session` False runs the prompt on its own: no conversation is resumed
     and none is written back. A question about selected text uses that, so the
     selection neither joins the spoken conversation nor lands in its file.
+    The CLIs still keep their own transcripts wherever they keep them.
+
+    `read_only` is for a prompt carrying text the user did not write: Claude
+    Code is denied the tools in CLAUDE_READ_ONLY_DENY and Codex runs in its
+    read-only sandbox, whatever Settings says, so instructions planted in that
+    text have less to work with. Antigravity has no flag for it and runs under
+    its own allow-rules, and Claude's MCP tools are not covered by the list.
+
+    `system` replaces the instruction from Settings for this one run, whose
+    default is written for an answer that gets pasted.
     """
     name = provider(conf)
     if name in ("openrouter", "opencode", "requesty"):
         return _ask_chat(name, SERVICES[name], prompt, conf, on_stage,
-                         keep_session)
+                         keep_session, system)
 
     binary = executable(name)
     if not shutil.which(binary):
@@ -284,8 +302,9 @@ def ask(prompt, conf, on_stage=None, should_stop=None, keep_session=True):
         ))
 
     run = {"claude": _ask_claude, "codex": _ask_codex, "agy": _ask_agy}[name]
-    if not keep_session:
-        return run(prompt, conf, "", on_stage, should_stop, keep=False)
+    if not keep_session or read_only or system:
+        return run(prompt, conf, "", on_stage, should_stop, keep=False,
+                   read_only=read_only, system=system)
     session = read_session(name, conf["assistant_session_minutes"] * 60)
     try:
         return run(prompt, conf, session, on_stage, should_stop)
@@ -303,19 +322,22 @@ class _SessionGone(Exception):
 
 # --- Claude Code ----------------------------------------------------------
 
-def _ask_claude(prompt, conf, session, on_stage, should_stop, keep=True):
+def _ask_claude(prompt, conf, session, on_stage, should_stop, keep=True,
+                read_only=False, system=None):
     cmd = [
         "claude", "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--model", conf["assistant_model"],
         "--permission-mode", conf["assistant_permission_mode"],
-        "--append-system-prompt", conf.assistant_prompt(),
+        "--append-system-prompt", system or conf.assistant_prompt(),
     ]
     effort = CLAUDE_EFFORT.get(conf["assistant_reasoning"], "")
     if effort:
         cmd += ["--effort", effort]
     if session:
         cmd += ["--resume", session]
+    if read_only:
+        cmd += ["--disallowedTools", *CLAUDE_READ_ONLY_DENY]
 
     found = {"answer": "", "warning": "", "session": "", "failure": ""}
 
@@ -364,12 +386,14 @@ def _denial_warning(event):
 
 # --- Codex ----------------------------------------------------------------
 
-def _ask_codex(prompt, conf, session, on_stage, should_stop, keep=True):
+def _ask_codex(prompt, conf, session, on_stage, should_stop, keep=True,
+               read_only=False, system=None):
     # Codex takes no system prompt of its own, so the instruction rides along in
     # front of the command, kept apart from it so the two are not read as one.
-    body = f"{conf.assistant_prompt()}\n\n---\n\n{prompt}"
+    body = f"{system or conf.assistant_prompt()}\n\n---\n\n{prompt}"
     settings = [
-        "-c", f'sandbox_mode="{conf["assistant_codex_sandbox"]}"',
+        "-c", 'sandbox_mode="{}"'.format(
+            "read-only" if read_only else conf["assistant_codex_sandbox"]),
         "-c", 'approval_policy="never"',   # there is nobody here to approve
         "--skip-git-repo-check",
         "--json",
@@ -446,11 +470,14 @@ def codex_models():
 
 # --- Antigravity ----------------------------------------------------------
 
-def _ask_agy(prompt, conf, session, on_stage, should_stop, keep=True):
+def _ask_agy(prompt, conf, session, on_stage, should_stop, keep=True,
+             read_only=False, system=None):
+    # read_only is accepted and cannot be honoured: agy has no permission flag,
+    # only the allow-rules in its own configuration.
     # Antigravity takes no system prompt of its own either, so the instruction
     # rides in front of the command, kept apart from it so the two are not read
     # as one.
-    body = f"{conf.assistant_prompt()}\n\n---\n\n{prompt}"
+    body = f"{system or conf.assistant_prompt()}\n\n---\n\n{prompt}"
     cmd = [
         "agy", "-p", body,
         "--output-format", "stream-json",
@@ -537,7 +564,7 @@ def agy_models():
 
 # --- OpenRouter, OpenCode Go and Requesty ---------------------------------
 
-def _ask_chat(name, service, prompt, conf, on_stage, keep=True):
+def _ask_chat(name, service, prompt, conf, on_stage, keep=True, system=None):
     """A plain question and answer, over a chat provider's key.
 
     No tools, no files, no calendar. It is the fallback for a machine with
@@ -556,7 +583,7 @@ def _ask_chat(name, service, prompt, conf, on_stage, keep=True):
     key = conf.api_key(f"{name}_api_key")
     try:
         answer = api.chat(
-            messages, key, model, conf.assistant_prompt(),
+            messages, key, model, system or conf.assistant_prompt(),
             reasoning=conf["assistant_reasoning"], base_url=base_url,
             timeout=conf["assistant_timeout"], provider=name, service=service,
         )

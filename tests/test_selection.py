@@ -123,7 +123,7 @@ class Capture(DikteTest):
     def test_linux_without_primary_copies_when_it_can_press_keys(self):
         got = self.capture(paste.WAYLAND, primary=None, ready=True)
         self.assertEqual(got, selection.Selection("the selection", "clipboard"))
-        self.calls.press.assert_called_once_with("ctrl+c",
+        self.calls.press.assert_called_once_with("ctrl+insert",
                                                  delay=selection.COPY_DELAY,
                                                  focus=None)
 
@@ -143,10 +143,11 @@ class Capture(DikteTest):
                                                  focus=4242)
         self.calls.copy_bytes.assert_called_once_with(b"what was there")
 
-    def test_windows_presses_ctrl_c_and_restores_the_clipboard(self):
+    def test_windows_presses_ctrl_insert_and_restores_the_clipboard(self):
+        """Ctrl+Insert copies like Ctrl+C but is no interrupt in a console."""
         got = self.capture(paste.WINDOWS)
         self.assertEqual(got.text, "the selection")
-        self.assertEqual(self.calls.press.call_args.args[0], "ctrl+c")
+        self.assertEqual(self.calls.press.call_args.args[0], "ctrl+insert")
         self.calls.copy_bytes.assert_called_once_with(b"what was there")
 
     def test_nothing_selected_reads_back_as_nothing(self):
@@ -164,15 +165,32 @@ class Capture(DikteTest):
 
     def test_an_empty_clipboard_is_put_back_empty(self):
         self.calls.read_clipboard.return_value = None
-        self.capture(paste.WINDOWS)
+        self.capture(paste.WAYLAND, primary=None, ready=True)
         self.assertEqual(self.calls.copy.call_args_list,
                          [mock.call(""), mock.call("")])
         self.calls.copy_bytes.assert_not_called()
 
+    def test_a_windows_clipboard_that_cannot_be_read_is_left_alone(self):
+        """None there means another program holds it, not that it is empty."""
+        self.calls.read_clipboard.return_value = None
+        got = self.capture(paste.WINDOWS)
+        self.assertEqual(got, selection.NOTHING)
+        self.calls.copy.assert_not_called()
+        self.calls.press.assert_not_called()
+
+    def test_a_cancelled_grab_presses_nothing(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with mock.patch.object(paste, "desktop", return_value=paste.MACOS), \
+                contextlib.redirect_stderr(io.StringIO()):
+            got = selection.capture(None, cancelled)
+        self.assertEqual(got, selection.NOTHING)
+        self.assertEqual(self.calls.mock_calls, [])
+
     def test_the_grab_runs_off_the_calling_thread(self):
         seen = []
 
-        def fake(focus):
+        def fake(focus, cancelled):
             seen.append((threading.current_thread(), focus))
             return selection.Selection("x", "primary")
 
@@ -185,7 +203,7 @@ class Capture(DikteTest):
     def test_a_grab_that_hangs_gives_nothing(self):
         release = threading.Event()
         with mock.patch.object(selection, "capture",
-                               side_effect=lambda focus: release.wait(5) and None):
+                               side_effect=lambda focus, cancelled: release.wait(5) and None):
             grab = selection.Grab()
             self.assertEqual(grab.result(timeout=0.05), selection.NOTHING)
             release.set()
@@ -229,19 +247,25 @@ class Prompt(unittest.TestCase):
 
 class Reply(unittest.TestCase):
     def test_a_replacement_is_an_edit(self):
-        self.assertEqual(selection.parse_reply("[[replace]]\nShorter.", True),
+        self.assertEqual(selection.parse_reply("[[replace]]\nShorter.", "Long."),
                          (selection.EDIT, "Shorter."))
 
+    def test_an_edit_keeps_the_selections_own_edges(self):
+        """A triple-clicked line keeps its newline, indented code its indent."""
+        self.assertEqual(
+            selection.parse_reply("[[replace]]\nx = 2\n\n", "    x = 1\n"),
+            (selection.EDIT, "    x = 2\n"))
+
     def test_an_answer_is_an_answer(self):
-        self.assertEqual(selection.parse_reply("[[answer]]\nIt means X.", True),
+        self.assertEqual(selection.parse_reply("[[answer]]\nIt means X.", "t"),
                          (selection.ANSWER, "It means X."))
 
     def test_an_unmarked_reply_is_an_answer(self):
-        self.assertEqual(selection.parse_reply("Just text.", True),
+        self.assertEqual(selection.parse_reply("Just text.", "t"),
                          (selection.ANSWER, "Just text."))
 
     def test_no_selection_means_no_edit_whatever_it_says(self):
-        self.assertEqual(selection.parse_reply("[[replace]] new", False),
+        self.assertEqual(selection.parse_reply("[[replace]] new", ""),
                          (selection.ANSWER, "new"))
 
 
@@ -384,6 +408,8 @@ class Chain(DikteTest):
         self.assertIn("A rather long sentence.", prompt)
         self.assertIn("make it short", prompt)
         self.assertIs(run.ask.call_args.kwargs["keep_session"], False)
+        # Not the Settings instruction, which promises a pasted one-liner.
+        self.assertEqual(run.ask.call_args.kwargs["system"], selection.SYSTEM_PROMPT)
 
     def test_an_answer_is_never_pasted_or_copied(self):
         run = self.run_chain(self.grab("Some text."), reply="[[answer]]\nIt says hi.")
@@ -526,6 +552,64 @@ class App(DikteTest):
 
     def test_no_apply_without_a_selection(self):
         self.assertFalse(self.answer(selection.EDIT, selected="").can_apply)
+
+    def test_no_apply_for_a_selection_the_agent_only_saw_part_of(self):
+        long = "x" * (selection.MAX_CHARS + 1)
+        self.assertFalse(self.answer(selection.EDIT, selected=long).can_apply)
+
+    def test_a_discarded_question_cancels_its_copy(self):
+        target = self.controller(True)
+        grab = mock.Mock()
+        target.assist_grab = grab
+        target.ask_state = app.RECORDING
+        target.ticker = mock.Mock()
+        target.recorder = mock.Mock()
+        target._clear_pause = mock.Mock()
+        target._set_ask_state = lambda state: setattr(target, "ask_state", state)
+        app.Dikte._cancel(target)
+        grab.cancel.assert_called_once_with()
+        self.assertIsNone(target.assist_grab)
+
+
+class ReadOnly(DikteTest):
+    """A run carrying selected text goes out with the write tools taken away."""
+
+    def command(self, run, read_only, **settings):
+        conf = self.config(**settings)
+        with mock.patch.object(assistant, "_stream", return_value=(0, "")) as stream, \
+                mock.patch.object(assistant, "_conclude", return_value=("ok", "")):
+            run("prompt", conf, "", None, None, keep=False, read_only=read_only)
+        return stream.call_args.args[0]
+
+    def test_claude_is_denied_commands_writes_and_fetches(self):
+        cmd = self.command(assistant._ask_claude, True)
+        denied = cmd[cmd.index("--disallowedTools") + 1:]
+        for tool in ("Bash", "Edit", "Write", "WebFetch"):
+            self.assertIn(tool, denied)
+        self.assertNotIn("--disallowedTools",
+                         self.command(assistant._ask_claude, False))
+
+    def test_codex_runs_in_its_read_only_sandbox(self):
+        cmd = self.command(assistant._ask_codex, True,
+                           assistant_codex_sandbox="workspace-write")
+        self.assertIn('sandbox_mode="read-only"', cmd)
+        cmd = self.command(assistant._ask_codex, False,
+                           assistant_codex_sandbox="workspace-write")
+        self.assertIn('sandbox_mode="workspace-write"', cmd)
+
+    def test_the_worker_asks_read_only_only_when_something_was_selected(self):
+        chain = Chain("test_an_edit_is_handed_over_not_applied")
+        chain.setUp()
+        self.addCleanup(chain.doCleanups)
+        run = chain.run_chain(Chain.grab("Some text."))
+        self.assertIs(run.ask.call_args.kwargs["read_only"], True)
+        run = chain.run_chain(Chain.grab(""), reply="Lima.")
+        self.assertIs(run.ask.call_args.kwargs["read_only"], False)
+
+    def test_the_prompt_stops_inviting_tools_when_text_is_selected(self):
+        prompt = selection.build_prompt("summarise", "text", True)
+        self.assertNotIn("look it up", prompt)
+        self.assertIn("Do not run commands", prompt)
 
 
 class Session(DikteTest):

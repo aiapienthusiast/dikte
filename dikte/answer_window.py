@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
                              QPushButton, QVBoxLayout)
 
 from . import paste
+from . import selection
 from .i18n import t
 
 # How much of the selection the tooltip shows. The whole of it went to the
@@ -35,7 +36,6 @@ def _one_line(text, limit=90):
 class AnswerWindow(QDialog):
     # Carried out on a thread of its own; this is how a failure comes back.
     apply_failed = pyqtSignal(str)
-    copied = pyqtSignal(str)
 
     def __init__(self, instruction, answer, selected="", can_apply=False,
                  apply_fn=None, agent="", parent=None):
@@ -106,8 +106,9 @@ class AnswerWindow(QDialog):
             try:
                 self._apply_fn(text)
             except paste.PasteError as exc:
-                self.apply_failed.emit(t("Copied, but pasting failed: {error}",
-                                         error=exc))
+                self.apply_failed.emit(str(exc))
+            except Exception as exc:  # the window is gone; say it somewhere
+                self.apply_failed.emit(t("Unexpected error: {error}", error=exc))
 
         self._thread = threading.Thread(target=work, daemon=True)
         self._thread.start()
@@ -115,10 +116,12 @@ class AnswerWindow(QDialog):
 
     def copy(self):
         try:
-            paste.copy(self.text())
+            # Under the paste lock, so a dictation restoring its clipboard at
+            # this moment cannot put the old contents back over the answer.
+            with selection._paste_lock():
+                paste.copy(self.text())
         except paste.PasteError as exc:
             self.copy_button.setToolTip(_tip(str(exc)))
             self.copy_button.setText(t("Copy failed"))
             return
         self.copy_button.setText(t("Copied"))
-        self.copied.emit(self.text())
