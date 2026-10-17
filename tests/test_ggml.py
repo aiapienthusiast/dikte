@@ -2163,6 +2163,64 @@ class ManagedWhisperOnWindows(Local):
             self.assertTrue(ggml._under(path, into), path)
 
 
+class ProcessorOnlyBuilds(Local):
+    """Whether a downloaded build can reach a graphics card at all, read from
+    the backend libraries it carries."""
+
+    def install(self, *files, recorded=True):
+        root = self.path("data", "bin", "whisper", "v1")
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True)
+        binary = root / "whisper-server"
+        binary.write_bytes(b"server")
+        binary.chmod(0o755)
+        for name in files:
+            (root / name).write_bytes(b"library")
+        record = ggml._install_record(ggml.WHISPER)
+        record.unlink(missing_ok=True)
+        if recorded:
+            record.write_text(json.dumps({"tag": "v1", "binary": str(binary)}),
+                              encoding="utf-8")
+        return str(binary)
+
+    def test_the_windows_blas_archive_is_processor_only(self):
+        binary = self.install("ggml.dll", "ggml-base.dll", "ggml-blas.dll",
+                              "ggml-cpu-haswell.dll", "ggml-cpu-x64.dll",
+                              "whisper.dll", "libopenblas.dll", "SDL2.dll")
+        self.assertTrue(ggml.processor_only(ggml.WHISPER, binary))
+
+    def test_the_linux_processor_archive_is_processor_only(self):
+        binary = self.install("libggml.so.0", "libggml-base.so",
+                              "libggml-cpu-haswell.so", "libwhisper.so.1")
+        self.assertTrue(ggml.processor_only(ggml.WHISPER, binary))
+
+    def test_a_vulkan_backend_is_a_graphics_card_build(self):
+        for vulkan in ("ggml-vulkan.dll", "libggml-vulkan.so"):
+            with self.subTest(vulkan=vulkan):
+                binary = self.install("ggml.dll", "ggml-cpu-x64.dll", vulkan)
+                self.assertFalse(ggml.processor_only(ggml.WHISPER, binary))
+
+    def test_an_unknown_backend_is_not_called_processor_only(self):
+        binary = self.install("ggml-cpu-x64.dll", "ggml-somethingnew.dll")
+        self.assertFalse(ggml.processor_only(ggml.WHISPER, binary))
+
+    def test_backends_linked_in_somewhere_else_are_not_guessed(self):
+        binary = self.install("libggml.so.0", "libwhisper.so.1")
+        self.assertFalse(ggml.processor_only(ggml.WHISPER, binary))
+
+    def test_a_build_dikte_did_not_download_is_never_claimed(self):
+        binary = self.install("ggml-cpu-x64.dll", recorded=False)
+        self.assertFalse(ggml.processor_only(ggml.WHISPER, binary))
+        binary = self.install("ggml-cpu-x64.dll")
+        self.assertFalse(ggml.processor_only(ggml.WHISPER, binary + ".other"))
+        self.assertFalse(ggml.processor_only(ggml.WHISPER, ""))
+
+    def test_an_extra_backend_path_is_not_second_guessed(self):
+        binary = self.install("ggml-cpu-x64.dll")
+        with mock.patch.dict(os.environ, {"GGML_BACKEND_PATH": "/x.so"}):
+            self.assertFalse(ggml.processor_only(ggml.WHISPER, binary))
+
+
 class WindowsOwnership(Local):
     """Sweeping on Windows goes by the executable's full path, never its name:
     the base name alone is anyone's whisper-server.exe, and this answer decides

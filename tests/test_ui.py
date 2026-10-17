@@ -2052,6 +2052,27 @@ class LocalModels(DikteTest):
         self.assertNotIn("Detected GPU", window.local_whisper.machine_label.text())
         self.assertIn("Graphics card unavailable", window.local_whisper.machine_label.text())
 
+    def test_a_build_without_a_graphics_backend_disables_the_device_choice(self):
+        """Upstream's Windows BLAS archive and the Linux processor build carry
+        no graphics backend, so a device box there would do nothing."""
+        identifier = "vulkan:00112233445566778899aabbccddeeff"
+        device = hardware.GraphicsDevice("Detected GPU", 12 << 30, False, identifier, 0)
+        window = self.window(self.config(local_device="auto"))
+        with mock.patch.object(ggml, "processor_only", return_value=True):
+            window._set_processing_devices((device,), ())
+        text = window.local_whisper.machine_label.text()
+        self.assertFalse(window.local_device.isEnabled())
+        self.assertIn("no graphics card support", text)
+        self.assertNotIn("Automatic may still use a graphics card", text)
+        # The choice is kept for a later download that can use it.
+        self.assertEqual(window.local_device.currentData(), "auto")
+        with mock.patch.object(ggml, "processor_only", return_value=False):
+            window._set_processing_devices((device,), (device,))
+        self.assertTrue(window.local_device.isEnabled())
+        self.assertNotIn("no graphics card support",
+                         window.local_whisper.machine_label.text())
+        self.assertGreaterEqual(window.local_device.findData(identifier), 0)
+
     def test_processing_device_tooltip_names_metal(self):
         window = self.window(cfg.Config())
         tooltip = window.local_device.toolTip()

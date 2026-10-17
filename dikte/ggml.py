@@ -584,6 +584,53 @@ def vulkan_missing(program):
             and _read_record(program).get("backend") == "processor")
 
 
+# ggml backends that run on the processor whatever the machine has. BLAS is a
+# CPU matrix library, RPC hands work to another machine, ZenDNN is AMD's CPU
+# library. Any other backend name may reach a graphics card, so a build that
+# carries one is never called processor-only here.
+_PROCESSOR_BACKENDS = ("cpu", "blas", "rpc", "zendnn")
+# libggml.so.0, libggml-base.so, libggml-cpu-haswell.so, ggml-vulkan.dll.
+_GGML_LIBRARY = re.compile(
+    r"(?:lib)?ggml(?:-(?P<backend>[a-z0-9_]+)(?:-[a-z0-9_]+)*)?"
+    r"\.(?:dll|so|dylib)(?:\.[0-9]+)*", re.IGNORECASE)
+
+
+def processor_only(program, binary):
+    """Whether the build at `binary` is one Dikte downloaded and that carries
+    no graphics backend at all.
+
+    True means the processing device cannot be anything but the processor:
+    upstream's Windows BLAS and CPU archives, and the Linux processor build a
+    machine without a Vulkan loader, or without the managed bundle, ends up
+    with. The settings window disables its device choice on that answer
+    instead of offering a card the build cannot reach.
+
+    Read from the files rather than from the install record, so a build that
+    was installed before the record learned about it is answered too. Every
+    ggml backend is its own library in these archives, so the directory says
+    exactly what can load. A build Dikte did not download is never claimed:
+    a system package can link its backends into one library, and a wrong
+    "processor only" there would take a working card away.
+    """
+    installed = installed_program(program)
+    if not binary or not installed or "GGML_BACKEND_PATH" in os.environ:
+        return False
+    try:
+        if pathlib.Path(binary).resolve() != pathlib.Path(installed).resolve():
+            return False
+        names = os.listdir(pathlib.Path(installed).resolve().parent)
+    except OSError:
+        return False
+    backends = [found.group("backend") or "" for found in
+                map(_GGML_LIBRARY.fullmatch, names) if found]
+    # Without a processor backend among the files the backends are linked in
+    # somewhere this cannot see, and nothing can be said about them.
+    if "cpu" not in (backend.lower() for backend in backends):
+        return False
+    return all(backend.lower() in ("", "base") + _PROCESSOR_BACKENDS
+               for backend in backends)
+
+
 def _vulkan_backend_names(log):
     """Names in Vulkan-local order; callers must verify the other backends."""
     indexed = {}
