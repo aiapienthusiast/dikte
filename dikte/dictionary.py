@@ -193,7 +193,13 @@ def _clean_pending(raw):
         if (isinstance(term, str) and isinstance(value, list) and len(value) == 2
                 and all(isinstance(v, int) and not isinstance(v, bool) for v in value)
                 and value[0] > 0):
-            out[term] = list(value)
+            # Kept folded, and folded again on every read: a file written
+            # before fold() changed still counts the same words as one.
+            key = PAIR.join(_key(side) for side in term.split(PAIR))
+            if key in out:
+                out[key] = [max(out[key][0], value[0]), max(out[key][1], value[1])]
+            else:
+                out[key] = list(value)
     return out
 
 
@@ -231,8 +237,9 @@ def _read_file():
                 "entries": _clean_records(data.get("entries")),
                 "pending": _clean_pending(data.get("pending")),
                 "synced": synced if isinstance(synced, str) else "",
-                "rejected": ([x for x in rejected if isinstance(x, str)][-REJECTED_LIMIT:]
-                             if isinstance(rejected, list) else []),
+                "rejected": (list(dict.fromkeys(
+                    _key(x) for x in rejected if isinstance(x, str)))[-REJECTED_LIMIT:]
+                    if isinstance(rejected, list) else []),
                 "clock": clock if isinstance(clock, int) and not isinstance(clock, bool) else 0,
             }
         else:
@@ -363,15 +370,17 @@ def write(pending, forget=False):
         # A learned record the user took out is remembered as refused, so the
         # same word is not learned straight back three dictations later.
         kept = {_key(r["term"]) for r in merged}
+        in_use = kept | {_key(hint_of(r)) for r in merged}
         rejected = list(stored["rejected"])
         for record in loaded:
             key = _key(record["term"])
             if record["source"] != AUTO or key in kept:
                 continue
             # A learned correction refuses its spelling as well, so the same
-            # name heard another wrong way does not bring it straight back.
+            # name heard another wrong way does not bring it straight back;
+            # not a spelling an entry still kept (a typed one, say) uses.
             for refused in (key, _key(record["spelling"])):
-                if refused and refused not in rejected:
+                if refused and refused not in rejected and refused not in in_use:
                     rejected.append(refused)
         _write(merged, {} if forget else stored["pending"], text, rejected,
                stored["clock"])
@@ -606,7 +615,7 @@ def _plain(text):
     """Folded, without accents or anything but letters and digits: two
     spellings that differ only in case, punctuation, diacritics or the space
     between the words come out the same."""
-    text = unicodedata.normalize("NFKD", fold(text).replace("ı", "i"))
+    text = unicodedata.normalize("NFKD", fold(text))
     return "".join(c for c in text if c.isalnum())
 
 
@@ -626,10 +635,15 @@ def _sound(words):
     return "".join(out)
 
 
+def _technical(word):
+    """A digit or a dot in it (GPT-4o, Node.js): a term whatever its case."""
+    return any(c.isdigit() for c in word) or "." in word
+
+
 def _namey(word):
-    """Title or camel case, a digit or a dot (Node.js): how a name or a term
-    looks, rather than prose."""
-    return _titled(word) or any(c.isdigit() for c in word) or "." in word
+    """Title or camel case, or technical: how a name or a term looks, rather
+    than prose."""
+    return _titled(word) or _technical(word)
 
 
 # Sounds and words the cleanup drops as filler, which the alignment would
@@ -689,11 +703,14 @@ def corrections(raw, text):
         if not (1 <= len(before) <= CORRECTION_WORDS
                 and 1 <= len(after) <= CORRECTION_WORDS):
             continue
+        # The widening stopped at a capitalised word that starts the
+        # sentence: the name may run on into it ("Claude kod is great"), so
+        # what is left is part of a name, and a part is not learned.
+        if j1 > 0 and _namey(written[j1 - 1]) and together(j1 - 1, j1):
+            continue
         # A capital that only starts the sentence makes nothing a name.
-        gap = text[:matches[j1].start()].rstrip(" \t")
-        starts = not gap or gap[-1] in _SENTENCE_END
-        if starts and not any(_titled(w) for w in after[1:]) \
-                and not (any(c.isdigit() for c in after[0]) or "." in after[0]):
+        if begins(j1) and not any(_titled(w) for w in after[1:]) \
+                and not _technical(after[0]):
             continue
         if not any(_namey(w) for w in after) or any(_key(w) in COMMON for w in after):
             continue
@@ -747,7 +764,7 @@ def learn(conf, raw, text, speech_language=""):
         middle = {term for term, starts in found if not starts}
         terms = []
         for term, starts in found:
-            if starts and term not in middle and term not in pending:
+            if starts and term not in middle and _key(term) not in pending:
                 continue
             if term not in terms:
                 terms.append(term)
@@ -781,15 +798,15 @@ def learn(conf, raw, text, speech_language=""):
         for term in terms:
             if _key(term) in known:
                 continue
-            count = pending.get(term, [0, 0])[0] + 1
+            count = pending.get(_key(term), [0, 0])[0] + 1
             if count >= LEARN_AFTER:
-                pending.pop(term, None)
+                pending.pop(_key(term), None)
                 record = entry(term, source=AUTO)
                 current.append(record)
                 known.add(_key(term))
                 added.append(record)
             else:
-                pending[term] = [count, clock]
+                pending[_key(term)] = [count, clock]
         if len(pending) > PENDING_LIMIT:
             # Least recently seen out first, whatever the count.
             recent = sorted(pending.items(), key=lambda item: -item[1][1])

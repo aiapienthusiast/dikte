@@ -96,7 +96,7 @@ class Records(DikteTest):
         merged = dictionary.write(pending)
         self.assertEqual([r["term"] for r in merged], ["Paraşüt", "OpenFrame", "Claude"])
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertEqual(stored["pending"], {"Grafana": [2, 0]})
+        self.assertEqual(stored["pending"], {"grafana": [2, 0]})
 
     def test_a_deletion_in_the_window_is_a_deletion(self):
         conf = self.config()
@@ -207,7 +207,7 @@ class Learning(DikteTest):
         dictionary._write([], {"Ali": [1, 1], "Claude Code": [1, 1], "Grafana": [1, 1]}, "")
         cfg.delete_history([{"raw": "kalibrasyon Alican ile", "text": "I asked Claude  Code\tnow."}])
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertEqual(sorted(stored["pending"]), ["Ali", "Grafana"])
+        self.assertEqual(sorted(stored["pending"]), ["ali", "grafana"])
 
     def test_a_term_without_words_is_never_matched_by_a_wordless_row(self):
         self.config()
@@ -257,8 +257,8 @@ class Learning(DikteTest):
                           "", clock=dictionary.PENDING_LIMIT)
         self.learn(conf, "It runs on OpenFrame now.")
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertIn("OpenFrame", stored["pending"])
-        self.assertNotIn("Word0", stored["pending"])
+        self.assertIn("openframe", stored["pending"])
+        self.assertNotIn("word0", stored["pending"])
         self.assertEqual(len(stored["pending"]), dictionary.PENDING_LIMIT)
         self.learn(conf, "It runs on OpenFrame now.", 2)
         self.assertIn("OpenFrame", conf.dictionary_hint())
@@ -291,7 +291,7 @@ class Learning(DikteTest):
         cfg.delete_history([{"ts": "x", "raw": "it runs on openframe",
                              "text": "It runs on OpenFrame now."}])
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertEqual(list(stored["pending"]), ["Grafana"])
+        self.assertEqual(list(stored["pending"]), ["grafana"])
 
     def test_a_command_line_edit_keeps_what_was_learned(self):
         conf = self.config(transcribe_prompt="Paraşüt")
@@ -433,3 +433,41 @@ class CorrectionShapes(DikteTest):
         self.assertEqual(dictionary.fold("Işık"), dictionary.fold("IŞIK"))
         self.assertEqual(dictionary.fold("ılık"), dictionary.fold("Ilık"))
         self.assertEqual(dictionary.fold("İstanbul"), "istanbul")
+
+
+class OlderFiles(DikteTest):
+    def test_rejected_and_pending_keys_are_folded_on_read(self):
+        """A file written before fold() learned the dotless i still matches."""
+        cfg.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        dictionary.path().write_text(json.dumps({
+            "entries": [], "synced": "", "clock": 3,
+            "rejected": ["ışık", "IŞIK", "Kod"],
+            "pending": {"Işık": [1, 1], "ışık": [2, 3], "Klod Kod -> Claude Code": [1, 2]},
+        }), encoding="utf-8")
+        stored = dictionary._read_file()
+        self.assertEqual(stored["rejected"], ["işik", "kod"])
+        self.assertEqual(stored["pending"], {"işik": [2, 3],
+                                             "klod kod -> claude code": [1, 2]})
+
+
+class PartialNames(DikteTest):
+    def test_a_name_cut_off_at_the_sentence_start_is_not_learned(self):
+        self.assertEqual(dictionary.corrections("claude kod is great",
+                                                "Claude Code is great."), [])
+
+    def test_a_whole_name_at_the_sentence_start_still_is(self):
+        self.assertEqual(dictionary.corrections("klod kod is great",
+                                                "Claude Code is great."),
+                         [("klod kod", "Claude Code")])
+
+
+class RefusingSpellings(DikteTest):
+    def test_a_spelling_a_typed_entry_uses_is_not_refused(self):
+        conf = self.config()
+        typed = dictionary.entry("Claude Code")
+        learned = dictionary.entry("klod kod", "Claude Code", dictionary.AUTO)
+        loaded = dictionary.store(conf, [typed, learned], [])
+        dictionary.store(conf, dictionary.clear_auto(loaded), loaded)
+        rejected = dictionary._read_file()["rejected"]
+        self.assertIn("klod kod", rejected)
+        self.assertNotIn("claude code", rejected)
