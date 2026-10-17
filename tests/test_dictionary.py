@@ -184,9 +184,10 @@ class Learning(DikteTest):
         self.assertEqual(added, [])
         self.assertEqual(dictionary.corrections("bulut sistemine yükledim",
                                                 "Bulut sistemine yükledim."), [])
-        # A heard word that is not everyday still counts.
+        # A heard word that is not everyday still counts, widened to the
+        # whole name it is part of.
         self.assertEqual(dictionary.corrections("we tried klod code", "We tried Claude Code."),
-                         [("klod", "Claude")])
+                         [("klod code", "Claude Code")])
 
     def test_german_capitals_say_nothing(self):
         conf = self.config()
@@ -374,7 +375,61 @@ class Corrections(DikteTest):
         self.learn(conf, "it runs on cubernetis", "It runs on Kubernetes.")
         cfg.delete_history([{"raw": "we tried klod kod", "text": "We tried Claude Code."}])
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertEqual(list(stored["pending"]), ["cubernetis -> Kubernetes"])
+        self.assertEqual(list(stored["pending"]), ["cubernetis -> kubernetes"])
         cfg.clear_history()
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
         self.assertEqual(stored["pending"], {})
+
+
+class CorrectionShapes(DikteTest):
+    def test_a_half_misheard_name_is_learned_whole(self):
+        self.assertEqual(dictionary.corrections("we use cloud code daily",
+                                                "We use Claude Code daily."),
+                         [("cloud code", "Claude Code")])
+
+    def test_part_of_a_listed_name_is_not_a_term_of_its_own(self):
+        conf = self.config(transcribe_prompt="Visual Studio Code")
+        for _ in range(3):
+            added = dictionary.learn(conf, "open studio kode now",
+                                     "Open Studio Code now.", "en")
+        self.assertEqual(added, [])
+
+    def test_swapped_names_are_moved_not_misheard(self):
+        self.assertEqual(dictionary.corrections("anna called hannah",
+                                                "Hannah called Anna."), [])
+
+    def test_a_short_word_grown_into_a_longer_one_is_not_a_correction(self):
+        self.assertEqual(dictionary.corrections("ask mark about it",
+                                                "Ask Marketing about it."), [])
+
+    def test_the_same_correction_counts_once_whatever_its_case(self):
+        conf = self.config()
+        dictionary.learn(conf, "we tried Klod Kod", "We tried Claude Code.", "en")
+        dictionary.learn(conf, "we tried klod kod", "We tried Claude Code.", "en")
+        added = dictionary.learn(conf, "we tried KLOD KOD", "We tried Claude Code.", "en")
+        self.assertEqual([r["spelling"] for r in added], ["Claude Code"])
+
+    def test_filler_is_not_part_of_what_was_heard(self):
+        self.assertEqual(dictionary.corrections("we tried uh klod kod",
+                                                "We tried Claude Code."),
+                         [("klod kod", "Claude Code")])
+        self.assertEqual(dictionary.corrections("şey klod kod hani dedim",
+                                                "Claude Code dedim."),
+                         [("klod kod", "Claude Code")])
+
+    def test_a_deleted_correction_refuses_its_spelling_too(self):
+        conf = self.config()
+        for _ in range(3):
+            dictionary.learn(conf, "we tried klod kod", "We tried Claude Code.", "en")
+        loaded = dictionary.records(conf)
+        self.assertEqual([r["spelling"] for r in loaded], ["Claude Code"])
+        dictionary.store(conf, [], loaded)
+        for _ in range(3):
+            added = dictionary.learn(conf, "we tried klot kod", "We tried Claude Code.", "en")
+        self.assertEqual(added, [])
+        self.assertEqual(dictionary.records(conf), [])
+
+    def test_turkish_i_folds_every_way(self):
+        self.assertEqual(dictionary.fold("Işık"), dictionary.fold("IŞIK"))
+        self.assertEqual(dictionary.fold("ılık"), dictionary.fold("Ilık"))
+        self.assertEqual(dictionary.fold("İstanbul"), "istanbul")

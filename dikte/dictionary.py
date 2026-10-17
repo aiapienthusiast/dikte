@@ -146,10 +146,13 @@ def budget_hint(records, budget=HINT_BUDGET, reserve=0):
 
 
 def fold(text):
-    """Without regard to case, and with Turkish's dotted capital I folded to a
-    plain i rather than to an i and a combining dot. How the dictionary tells
-    two terms are the same one."""
-    return text.casefold().replace("i̇", "i")
+    """Without regard to case, and with every Turkish i the same letter: the
+    dotted capital İ (which would otherwise fold to an i and a combining dot)
+    and the dotless ı both fold to a plain i, as I does. "Işık" meets "IŞIK"
+    and "ılık" meets "Ilık", which Turkish speakers typing in a hurry and
+    transcribers alike mix up. How the dictionary tells two terms are the
+    same one, and what site matching compares."""
+    return text.casefold().replace("i\u0307", "i").replace("\u0131", "i")
 
 
 _key = fold
@@ -363,8 +366,13 @@ def write(pending, forget=False):
         rejected = list(stored["rejected"])
         for record in loaded:
             key = _key(record["term"])
-            if record["source"] == AUTO and key not in kept and key not in rejected:
-                rejected.append(key)
+            if record["source"] != AUTO or key in kept:
+                continue
+            # A learned correction refuses its spelling as well, so the same
+            # name heard another wrong way does not bring it straight back.
+            for refused in (key, _key(record["spelling"])):
+                if refused and refused not in rejected:
+                    rejected.append(refused)
         _write(merged, {} if forget else stored["pending"], text, rejected,
                stored["clock"])
         return merged
@@ -586,6 +594,8 @@ CORRECTION_WORDS = 4
 # How alike the two sides must sound, from 0 to 1. A misheard name sounds like
 # itself; a rewrite of the sentence does not.
 CORRECTION_LIKENESS = 0.6
+# How alike a short word and the longer one it starts must be to still count.
+CORRECTION_SAME = 0.9
 
 _SOUNDS = (("ph", "f"), ("ck", "k"), ("c", "k"), ("q", "k"), ("x", "ks"),
            ("w", "v"), ("y", "i"), ("au", "o"), ("ou", "u"), ("ee", "i"),
@@ -616,30 +626,66 @@ def _sound(words):
     return "".join(out)
 
 
-def _termlike(words, known):
-    """Whether a cleaned run of words is a name or a term rather than prose:
-    title or camel case, a digit or a dot (Node.js), or already listed."""
-    if _key(" ".join(words)) in known:
-        return True
-    return any(_titled(w) or any(c.isdigit() for c in w) or "." in w
-               for w in words)
+def _namey(word):
+    """Title or camel case, a digit or a dot (Node.js): how a name or a term
+    looks, rather than prose."""
+    return _titled(word) or any(c.isdigit() for c in word) or "." in word
 
 
-def corrections(raw, text, known=()):
+# Sounds and words the cleanup drops as filler, which the alignment would
+# otherwise take into the heard side of a correction ("uh klod kod").
+FILLERS = frozenset(fold(w) for w in """
+uh uhh um umm uhm er erm ah eh hm hmm mm mmm ehm
+ee eee eeee ıı ııı ıııı öö ööö şey yani hani işte
+""".split())
+
+
+def corrections(raw, text):
     """(heard, spelling) pairs: runs of up to four words the cleanup swapped
-    for a name or a term that sounds like them. Words it only added or only
-    dropped are not corrections, nor is a change of case, punctuation,
-    accents or a Turkish suffix (Ahmet'e for Ahmet)."""
+    for a name or a term that sounds like them.
+
+    A swap is widened to the whole name it is part of, so "cloud code" made
+    "Claude Code" is that pair and not "cloud" for "Claude". Filler at either
+    end of the heard side is left out. Not a correction: words only added or
+    only dropped, a change of case, punctuation, accents or a Turkish suffix
+    (Ahmet'e for Ahmet), a word that was only moved (it is in the transcript
+    elsewhere), a heard side made only of everyday words, and a heard side
+    that is the start of a longer word (mark for Marketing)."""
     heard = [m.group(0) for m in _WORD.finditer(raw)]
     matches = list(_WORD.finditer(text))
     written = [m.group(0) for m in matches]
-    found = []
-    matcher = difflib.SequenceMatcher(None, [_key(w) for w in heard],
-                                      [_key(w) for w in written], autojunk=False)
+    heard_keys = [_key(w) for w in heard]
+    written_keys = [_key(w) for w in written]
+    heard_joined = _joined(heard_keys)
+
+    def together(left, right):
+        """Two cleaned words side by side on one line, in one sentence."""
+        gap = text[matches[left].end():matches[right].start()]
+        return not gap.strip() and "\n" not in gap
+
+    def begins(index):
+        """A word whose capital may only be the sentence's: not widened onto."""
+        gap = text[:matches[index].start()].rstrip(" \t")
+        return not gap or gap[-1] in _SENTENCE_END
+
+    found, seen = [], set()
+    matcher = difflib.SequenceMatcher(None, heard_keys, written_keys, autojunk=False)
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
         if op != "replace":
             continue
+        # The rest of the name, where the transcriber got it right.
+        while (i1 > 0 and j1 > 0 and _namey(written[j1 - 1])
+               and not begins(j1 - 1)
+               and heard_keys[i1 - 1] == written_keys[j1 - 1] and together(j1 - 1, j1)):
+            i1, j1 = i1 - 1, j1 - 1
+        while (i2 < len(heard) and j2 < len(written) and _namey(written[j2])
+               and heard_keys[i2] == written_keys[j2] and together(j2 - 1, j2)):
+            i2, j2 = i2 + 1, j2 + 1
         before, after = heard[i1:i2], written[j1:j2]
+        while before and _key(before[0]) in FILLERS:
+            before = before[1:]
+        while before and _key(before[-1]) in FILLERS:
+            before = before[:-1]
         if not (1 <= len(before) <= CORRECTION_WORDS
                 and 1 <= len(after) <= CORRECTION_WORDS):
             continue
@@ -647,27 +693,33 @@ def corrections(raw, text, known=()):
         gap = text[:matches[j1].start()].rstrip(" \t")
         starts = not gap or gap[-1] in _SENTENCE_END
         if starts and not any(_titled(w) for w in after[1:]) \
-                and not (any(c.isdigit() for c in after[0]) or "." in after[0]) \
-                and _key(" ".join(after)) not in known:
+                and not (any(c.isdigit() for c in after[0]) or "." in after[0]):
             continue
-        if not _termlike(after, known) or any(_key(w) in COMMON for w in after):
+        if not any(_namey(w) for w in after) or any(_key(w) in COMMON for w in after):
             continue
         if all(_key(w) in EVERYDAY for w in before):
             continue
+        # Said, just somewhere else: the cleanup moved it, it did not hear it.
+        if _joined([_key(w) for w in after]) in heard_joined:
+            continue
         plain_before, plain_after = _plain(" ".join(before)), _plain(" ".join(after))
         if plain_before == plain_after:
-            continue
-        # A suffix the cleanup took off or put on: Ahmeti and Ahmet.
-        shorter, longer = sorted((plain_before, plain_after), key=len)
-        if longer.startswith(shorter) and len(longer) - len(shorter) <= 4:
             continue
         likeness = max(
             difflib.SequenceMatcher(None, plain_before, plain_after).ratio(),
             difflib.SequenceMatcher(None, _sound(before), _sound(after)).ratio())
         if likeness < CORRECTION_LIKENESS:
             continue
+        shorter, longer = sorted((plain_before, plain_after), key=len)
+        if longer.startswith(shorter):
+            # A suffix the cleanup took off or put on (Ahmeti and Ahmet), or
+            # a short word grown into a longer one (mark and Marketing),
+            # unless the two are as good as the same.
+            if len(longer) - len(shorter) <= 4 or likeness < CORRECTION_SAME:
+                continue
         pair = (" ".join(before), " ".join(after))
-        if pair not in found:
+        if (_key(pair[0]), _key(pair[1])) not in seen:
+            seen.add((_key(pair[0]), _key(pair[1])))
             found.append(pair)
     return found
 
@@ -703,13 +755,20 @@ def learn(conf, raw, text, speech_language=""):
         for record in current:
             known.add(_key(record["term"]))
             known.add(_key(hint_of(record)))
-        fixed = [(before, after) for before, after in corrections(raw, text, known)
-                 if _key(before) not in known and _key(after) not in known]
+        # A spelling that is only part of a longer listed name ("Code" of
+        # "Claude Code") is that name heard in part, not a term of its own.
+        longer = [_joined(_tokens(hint_of(r))) for r in current
+                  if len(_tokens(hint_of(r))) > 1]
+        fixed = [(before, after) for before, after in corrections(raw, text)
+                 if _key(before) not in known and _key(after) not in known
+                 and not any(_joined(_tokens(after)) in name for name in longer)]
         if not terms and not fixed:
             return []
         added = []
         for before, after in fixed:
-            key = before + PAIR + after
+            # Folded, so the same correction counts as one however the
+            # transcriber happened to capitalise it.
+            key = _key(before) + PAIR + _key(after)
             count = pending.get(key, [0, 0])[0] + 1
             if count >= LEARN_AFTER:
                 pending.pop(key, None)
