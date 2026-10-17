@@ -188,7 +188,9 @@ running.
   nouns, so the cleanup model is asked to fix those from context, and to leave
   the word alone when the context does not make the intended one clear. The names
   you list under Cleanup rules go to the transcription model as a hint and to the
-  cleanup model as a glossary, which is what lets it recognise "kuber netis":
+  cleanup model as a glossary, shared by the writing profiles that can set a
+  tone per program or translate the result, which is what lets it recognise
+  "kuber netis":
 
   ```
   raw    ıı bugün şey kuber netis üzerinde çalışan servisleri güncelledim
