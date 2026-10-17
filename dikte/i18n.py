@@ -1179,4 +1179,32 @@ TR = {
     "{size} system": "{size} sistem belleği",
     "{size} {kind} graphics": "{size} {kind} ekran kartı belleği",
 
+    # Asking about selected text.
+    "Selected text": "Seçili metin",
+    "Ask about the selected text": "Seçili metin hakkında sor",
+    "Select text, press the shortcut and say what to do with it. The answer "
+    "opens in a window with Copy, and Apply for edits; nothing is pasted until "
+    "you press Apply. On Linux the selection is read directly; on macOS and "
+    "Windows Dikte presses the copy shortcut and puts your clipboard back "
+    "afterwards. The selection is sent to the agent as data, is not kept in "
+    "the history, and does not join the conversation.":
+        "Metni seç, kısayola bas ve onunla ne yapılacağını söyle. Cevap, "
+        "kopyalama düğmesi ve düzenlemeler için Uygula düğmesi olan bir "
+        "pencerede açılır; Uygula'ya basmadan hiçbir şey yapıştırılmaz. "
+        "Linux'ta seçim doğrudan okunur; macOS ve Windows'ta Dikte kopyalama "
+        "kısayoluna basar ve panonu sonra eski haline getirir. Seçim ajana veri "
+        "olarak gönderilir, geçmişte saklanmaz ve konuşmaya katılmaz.",
+    "Dikte: {name}": "Dikte: {name}",
+    "You said: {text}": "Söylediğin: {text}",
+    "About the selection ({count} characters)": "Seçim hakkında ({count} karakter)",
+    "Apply": "Uygula",
+    "Replaces the selected text in the window it came from. Nothing is pasted "
+    "until you press this.":
+        "Seçili metni geldiği pencerede değiştirir. Buna basmadan hiçbir şey "
+        "yapıştırılmaz.",
+    "Cancel": "Vazgeç",
+    "Closes this and leaves the original text alone.":
+        "Pencereyi kapatır, asıl metne dokunmaz.",
+    "Copy failed": "Kopyalanamadı",
+
 }

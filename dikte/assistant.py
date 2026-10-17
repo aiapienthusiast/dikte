@@ -148,6 +148,14 @@ def executable(name):
     return {"claude": "claude", "codex": "codex", "agy": "agy"}.get(name, "")
 
 
+def uses_tools(conf):
+    """Whether the configured provider can run commands and reach the web.
+
+    The three CLIs can; the chat requests answer from what the model knows.
+    """
+    return bool(executable(provider(conf)))
+
+
 def model(conf):
     """Which model answered, for the history to record.
 
@@ -252,16 +260,21 @@ def working_dir(conf):
     return os.path.expanduser("~")
 
 
-def ask(prompt, conf, on_stage=None, should_stop=None):
+def ask(prompt, conf, on_stage=None, should_stop=None, keep_session=True):
     """Run the prompt through the configured agent. Returns (answer, warning).
 
     `warning` is set when the answer arrived but something about the run should
     be seen anyway, a denied tool above all: the reply still reads like a normal
     one, and only the denial explains why it did not do what it was asked to.
+
+    `keep_session` False runs the prompt on its own: no conversation is resumed
+    and none is written back. A question about selected text uses that, so the
+    selection neither joins the spoken conversation nor lands in its file.
     """
     name = provider(conf)
     if name in ("openrouter", "opencode", "requesty"):
-        return _ask_chat(name, SERVICES[name], prompt, conf, on_stage)
+        return _ask_chat(name, SERVICES[name], prompt, conf, on_stage,
+                         keep_session)
 
     binary = executable(name)
     if not shutil.which(binary):
@@ -271,6 +284,8 @@ def ask(prompt, conf, on_stage=None, should_stop=None):
         ))
 
     run = {"claude": _ask_claude, "codex": _ask_codex, "agy": _ask_agy}[name]
+    if not keep_session:
+        return run(prompt, conf, "", on_stage, should_stop, keep=False)
     session = read_session(name, conf["assistant_session_minutes"] * 60)
     try:
         return run(prompt, conf, session, on_stage, should_stop)
@@ -288,7 +303,7 @@ class _SessionGone(Exception):
 
 # --- Claude Code ----------------------------------------------------------
 
-def _ask_claude(prompt, conf, session, on_stage, should_stop):
+def _ask_claude(prompt, conf, session, on_stage, should_stop, keep=True):
     cmd = [
         "claude", "-p", prompt,
         "--output-format", "stream-json", "--verbose",
@@ -322,7 +337,7 @@ def _ask_claude(prompt, conf, session, on_stage, should_stop):
             found["warning"] = _denial_warning(event)
 
     code, stderr = _stream(cmd, conf, on_event, should_stop)
-    return _conclude(found, code, stderr, session, "claude")
+    return _conclude(found, code, stderr, session, "claude", keep)
 
 
 def _claude_label(block):
@@ -349,7 +364,7 @@ def _denial_warning(event):
 
 # --- Codex ----------------------------------------------------------------
 
-def _ask_codex(prompt, conf, session, on_stage, should_stop):
+def _ask_codex(prompt, conf, session, on_stage, should_stop, keep=True):
     # Codex takes no system prompt of its own, so the instruction rides along in
     # front of the command, kept apart from it so the two are not read as one.
     body = f"{conf.assistant_prompt()}\n\n---\n\n{prompt}"
@@ -390,7 +405,7 @@ def _ask_codex(prompt, conf, session, on_stage, should_stop):
                                 else str(error)) or t("Codex ended with an error.")
 
     code, stderr = _stream(cmd, conf, on_event, should_stop)
-    return _conclude(found, code, stderr, session, "codex")
+    return _conclude(found, code, stderr, session, "codex", keep)
 
 
 def _codex_label(item):
@@ -431,7 +446,7 @@ def codex_models():
 
 # --- Antigravity ----------------------------------------------------------
 
-def _ask_agy(prompt, conf, session, on_stage, should_stop):
+def _ask_agy(prompt, conf, session, on_stage, should_stop, keep=True):
     # Antigravity takes no system prompt of its own either, so the instruction
     # rides in front of the command, kept apart from it so the two are not read
     # as one.
@@ -479,7 +494,7 @@ def _ask_agy(prompt, conf, session, on_stage, should_stop):
                                                service="Antigravity")
 
     code, stderr = _stream(cmd, conf, on_event, should_stop)
-    return _conclude(found, code, stderr, session, "agy")
+    return _conclude(found, code, stderr, session, "agy", keep)
 
 
 def _agy_label(step):
@@ -522,7 +537,7 @@ def agy_models():
 
 # --- OpenRouter, OpenCode Go and Requesty ---------------------------------
 
-def _ask_chat(name, service, prompt, conf, on_stage):
+def _ask_chat(name, service, prompt, conf, on_stage, keep=True):
     """A plain question and answer, over a chat provider's key.
 
     No tools, no files, no calendar. It is the fallback for a machine with
@@ -532,7 +547,8 @@ def _ask_chat(name, service, prompt, conf, on_stage):
     """
     if on_stage:
         on_stage(t("Thinking…"))
-    history = read_messages(name, conf["assistant_session_minutes"] * 60)
+    history = (read_messages(name, conf["assistant_session_minutes"] * 60)
+               if keep else [])
     messages = history + [{"role": "user", "content": prompt}]
     # Each of them keeps its model, address and key under its own name.
     model = conf[f"assistant_{name}_model"]
@@ -546,8 +562,9 @@ def _ask_chat(name, service, prompt, conf, on_stage):
         )
     except api.ApiError as exc:
         raise AssistantError(str(exc)) from exc
-    write_session(name,
-                  messages=messages + [{"role": "assistant", "content": answer}])
+    if keep:
+        write_session(name, messages=messages
+                      + [{"role": "assistant", "content": answer}])
     return answer, ""
 
 
@@ -627,7 +644,7 @@ _API_TROUBLE = re.compile(
     r"\b(401|403|429|5\d\d)\b")
 
 
-def _conclude(found, code, stderr, session, name):
+def _conclude(found, code, stderr, session, name, keep=True):
     """Turn what the stream said into an answer, or into the reason there is none."""
     service = SERVICES.get(name, name)
     if code != 0 and not found["answer"]:
@@ -647,7 +664,7 @@ def _conclude(found, code, stderr, session, name):
         raise AssistantError(found["failure"])
     if not found["answer"]:
         raise AssistantError(t("{service} answered with nothing.", service=service))
-    if found["session"]:
+    if found["session"] and keep:
         write_session(name, found["session"])
     return found["answer"], found["warning"]
 

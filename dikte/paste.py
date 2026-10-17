@@ -27,6 +27,7 @@ from .i18n import t
 KEYCODES = {
     "ctrl": 29, "control": 29, "shift": 42, "alt": 56, "super": 125, "meta": 125,
     "v": 47, "insert": 110, "enter": 28, "return": 28,
+    "c": 46,   # the copy a selection question reads the selection with
 }
 
 # xdotool speaks X keysyms, which spell some of those differently.
@@ -370,6 +371,7 @@ WIN_KEYCODES = {
     "ctrl": 0x11, "control": 0x11, "shift": 0x10, "alt": 0x12,
     "super": 0x5B, "meta": 0x5B,
     "v": 0x56, "insert": 0x2D, "enter": 0x0D, "return": 0x0D,
+    "c": 0x43,
 }
 _WIN_KEYUP = 0x0002        # KEYEVENTF_KEYUP
 _WIN_CF_UNICODETEXT = 13   # what the clipboard calls UTF-16 text
@@ -651,6 +653,27 @@ def read_clipboard():
     except (subprocess.SubprocessError, OSError):
         return None
     return res.stdout if res.returncode == 0 else None
+
+
+def read_text():
+    """The clipboard as text: '' when it holds none, None when it cannot be read.
+
+    read_clipboard() keeps every byte so a restore is faithful; this is for the
+    one caller that wants to read what is there, a question about a selection.
+    """
+    here = desktop()
+    if here is WINDOWS:
+        return _win_read_text()
+    if not shutil.which(here.read_command[0]):
+        return None
+    try:
+        res = subprocess.run(here.read_command, capture_output=True, timeout=5,
+                             env=_clipboard_environment())
+    except (subprocess.SubprocessError, OSError):
+        return None
+    # wl-paste and xclip exit non-zero on an empty clipboard, which is the
+    # answer "nothing", not a failure to read.
+    return res.stdout.decode("utf-8", "replace") if res.returncode == 0 else ""
 
 
 def _run_copy(payload):
