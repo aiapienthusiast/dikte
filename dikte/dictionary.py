@@ -127,14 +127,15 @@ def render_glossary(records):
     return _render(records, gloss_of)
 
 
-def budget_hint(records, budget=HINT_BUDGET):
-    """The transcription hint: the typed records, then the learned ones, cut
-    at a record boundary once the budget is reached."""
-    ordered = ([r for r in records if r["source"] != AUTO]
-               + [dict(r, breaks=0) for r in records if r["source"] == AUTO])
-    kept = []
-    for record in ordered:
-        if kept and len(_render(kept + [record], hint_of)) > budget:
+def budget_hint(records, budget=HINT_BUDGET, reserve=0):
+    """The transcription hint: every typed record, as typed, then as many of
+    the learned ones as fit in what is left of the budget, cut at a record
+    boundary. Learning only ever fills spare room; what the user wrote goes
+    in whole, as it always did. `reserve` is room kept for what a caller adds
+    after it, the names of a meeting's participants."""
+    kept = [r for r in records if r["source"] != AUTO]
+    for record in (dict(r, breaks=0) for r in records if r["source"] == AUTO):
+        if len(_render(kept + [record], hint_of)) + reserve > budget:
             break
         kept.append(record)
     return _render(kept, hint_of)
@@ -188,7 +189,7 @@ def _clean_pending(raw):
 # The last file read, by its modification time and size: each dictation asks
 # for the hint and the glossary, and a learning run reads it again, so this
 # saves reading and parsing the same few kilobytes three times over.
-_cache = {"stamp": None, "data": None}
+_cache = {"entry": (None, None)}
 
 
 def _read_file():
@@ -202,7 +203,10 @@ def _read_file():
     except OSError:
         return None
     stamp = (str(path()), status.st_ino, status.st_mtime_ns, status.st_size)
-    if _cache["stamp"] != stamp:
+    # The stamp and the data travel as one tuple, swapped in one assignment,
+    # so a reader on another thread never pairs a new stamp with old data.
+    cached_stamp, cached = _cache["entry"]
+    if cached_stamp != stamp:
         try:
             with open(path(), encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -222,8 +226,9 @@ def _read_file():
             }
         else:
             data = None
-        _cache["stamp"], _cache["data"] = stamp, data
-    return copy.deepcopy(_cache["data"])
+        _cache["entry"] = (stamp, data)
+        cached = data
+    return copy.deepcopy(cached)
 
 
 def _reconcile(records, text, synced):
@@ -270,12 +275,12 @@ def records(conf):
     return list(_state(conf)[0])
 
 
-def hint(conf):
+def hint(conf, reserve=0):
     """The transcription hint. The stored text itself until there is a file."""
     found, _, exists = _state(conf)
     if not exists:
         return _text(conf)
-    return budget_hint(found)
+    return budget_hint(found, reserve=reserve)
 
 
 def glossary(conf):
@@ -289,7 +294,7 @@ def glossary(conf):
 def _write(entries, pending, synced, rejected=(), clock=0):
     # Forgotten first: two writes inside one tick of the file system clock can
     # leave the same time and size behind, and only this process writes here.
-    _cache["stamp"] = None
+    _cache["entry"] = (None, None)
     cfg.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     target = path()
     tmp = target.with_suffix(".json.tmp")
@@ -364,14 +369,23 @@ def store(conf, edited, loaded, forget=False):
     return write(pending, forget)
 
 
-def forget_pending():
-    """Drop every name still being counted. They are words out of dictations,
-    kept only for learning, and go when learning or the history does."""
+def forget_pending(texts=None):
+    """Drop names still being counted. They are words out of dictations, kept
+    only for learning, and go when learning or the history does: all of them,
+    or with `texts`, the ones that occur in those texts (the rows deleted)."""
     with _LOCK:
         stored = _read_file()
         if stored is None or not stored["pending"]:
             return
-        _write(stored["entries"], {}, stored["synced"], stored["rejected"],
+        if texts is None:
+            pending = {}
+        else:
+            haystack = _key("\n".join(t for t in texts if isinstance(t, str)))
+            pending = {term: value for term, value in stored["pending"].items()
+                       if _key(term) not in haystack}
+            if len(pending) == len(stored["pending"]):
+                return
+        _write(stored["entries"], pending, stored["synced"], stored["rejected"],
                stored["clock"])
 
 
@@ -450,7 +464,9 @@ def runs(text):
         # the word pattern stops at the apostrophe, so the name arrives bare and
         # the suffix as a lower case word of its own that ends the run.
         if _titled(word) and _key(word) not in COMMON:
-            if run and gap.strip():
+            # Only words side by side on one line, in one sentence, are one
+            # name: "Ahmet\nMehmet" is two.
+            if run and (gap.strip() or "\n" in gap or starts):
                 close()
             if not run:
                 run_starts = starts

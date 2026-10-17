@@ -951,10 +951,11 @@ class Config:
             prompt += SPEAKER_RULE_TR if turkish else SPEAKER_RULE_EN
         return prompt
 
-    def dictionary_hint(self):
-        """The personal dictionary as the transcription model is told it."""
+    def dictionary_hint(self, reserve=0):
+        """The personal dictionary as the transcription model is told it.
+        `reserve` is room left in its budget for what is added after it."""
         from . import dictionary  # it imports this module
-        return dictionary.hint(self)
+        return dictionary.hint(self, reserve)
 
     def dictionary_glossary(self):
         """The personal dictionary as the cleanup model is told it."""
@@ -989,8 +990,9 @@ class Config:
 
     def meeting_hint(self):
         """The transcription hint: the dictation glossary plus the names."""
-        return "\n".join(x for x in (self.dictionary_hint().strip(),
-                                     self.participants()) if x)
+        people = self.participants()
+        hint = self.dictionary_hint(reserve=len(people) + 1 if people else 0)
+        return "\n".join(x for x in (hint.strip(), people) if x)
 
     def speaker_names(self):
         """(mine, theirs), falling back to the interface language's defaults."""
@@ -1135,7 +1137,9 @@ def delete_history(rows):
         kept = [json.dumps(row, ensure_ascii=False) + "\n"
                 for row in _read_history() if _row_key(row) not in doomed]
         _write_history(kept)
-    _forget_learning()
+    # Only the names those rows held: the rest came from dictations still
+    # in the history.
+    _forget_learning([row.get(field) for row in rows for field in ("raw", "text")])
 
 
 def clear_history():
@@ -1144,12 +1148,12 @@ def clear_history():
     _forget_learning()
 
 
-def _forget_learning():
+def _forget_learning(texts=None):
     """Names still being counted for the dictionary came out of dictations, so
     they go with the history they came from."""
     from . import dictionary  # it imports this module
     try:
-        dictionary.forget_pending()
+        dictionary.forget_pending(texts)
     except OSError as exc:
         print(f"dikte: could not forget the names being learned ({exc})")
 

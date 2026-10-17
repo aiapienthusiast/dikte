@@ -194,6 +194,36 @@ class Learning(DikteTest):
         self.assertEqual(dictionary.candidates("Notes\nCall the doctor\n- Fix it"), [])
         self.assertEqual(dictionary.candidates("Notes:\nask Grafana"), ["Grafana"])
 
+    def test_a_line_break_ends_a_name(self):
+        self.assertEqual(dictionary.candidates("I talked to Ahmet\nand Mehmet is here"),
+                         ["Ahmet", "Mehmet"])
+        self.assertEqual(dictionary.candidates("I talked to Ahmet\nMehmet is here"),
+                         ["Ahmet"])
+        self.assertEqual(dictionary.runs("I met Ahmet. Mehmet came too."),
+                         [("Ahmet", False), ("Mehmet", True)])
+
+    def test_typed_entries_always_go_in_whole(self):
+        conf = self.config()
+        typed = [dictionary.entry("x" * 400), dictionary.entry("y" * 400)]
+        learned = [dictionary.entry("Learned", source="auto")]
+        dictionary.store(conf, typed + learned, [])
+        self.assertEqual(conf.dictionary_hint(), "x" * 400 + ", " + "y" * 400)
+
+    def test_the_meeting_names_count_against_the_budget(self):
+        conf = self.config(meeting_participants="P" * 300)
+        learned = [dictionary.entry(f"Learned{i:03d}", source="auto") for i in range(100)]
+        dictionary.store(conf, learned, [])
+        self.assertLessEqual(len(conf.meeting_hint()), dictionary.HINT_BUDGET + 10)
+        self.assertIn("P" * 300, conf.meeting_hint())
+
+    def test_a_reader_never_pairs_a_new_stamp_with_old_data(self):
+        conf = self.config()
+        dictionary.store(conf, [dictionary.entry("Paraşüt")], [])
+        dictionary.records(conf)
+        stamp, data = dictionary._cache["entry"]
+        self.assertIsNotNone(stamp)
+        self.assertEqual([r["term"] for r in data["entries"]], ["Paraşüt"])
+
     def test_a_full_count_still_counts_a_new_word(self):
         """Even when every word waiting has been seen twice: the ones not seen
         for longest go, not the newcomer."""
@@ -231,9 +261,12 @@ class Learning(DikteTest):
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
         self.assertEqual(stored["pending"], {})
         self.learn(conf, "It runs on OpenFrame now.")
-        cfg.delete_history([{"ts": "x", "text": "y"}])
+        self.learn(conf, "We asked Grafana about it.")
+        # Deleting one row forgets only the names that row held.
+        cfg.delete_history([{"ts": "x", "raw": "it runs on openframe",
+                             "text": "It runs on OpenFrame now."}])
         stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
-        self.assertEqual(stored["pending"], {})
+        self.assertEqual(list(stored["pending"]), ["Grafana"])
 
     def test_a_command_line_edit_keeps_what_was_learned(self):
         conf = self.config(transcribe_prompt="Paraşüt")
