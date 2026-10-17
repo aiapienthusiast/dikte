@@ -46,6 +46,7 @@ from . import audio  # noqa: E402
 from . import cli  # noqa: E402
 from . import config as cfg  # noqa: E402
 from . import cues  # noqa: E402
+from . import frontapp  # noqa: E402
 from . import ggml  # noqa: E402
 from . import hotkey  # noqa: E402
 from . import hub  # noqa: E402
@@ -54,6 +55,7 @@ from . import integrate  # noqa: E402
 from . import ipc  # noqa: E402
 from . import mac_window  # noqa: E402
 from . import meeting  # noqa: E402
+from . import profiles  # noqa: E402
 from . import trayicon  # noqa: E402
 from . import update  # noqa: E402
 from .i18n import t  # noqa: E402
@@ -172,6 +174,9 @@ class Dikte:
         # _give_the_front_back.
         self.front_before = None
         self._front_watch = None
+        # The writing profile the current dictation was started under, chosen
+        # from the program in front at the same moment as the above.
+        self.profile_before = None
 
         self.overlay = Overlay(self.conf["overlay_corner"],
                                screen_name=self.conf["overlay_screen"],
@@ -751,6 +756,22 @@ class Dikte:
         """
         return mac_window.frontmost_pid() if sys.platform == "darwin" else None
 
+    def _the_profile(self, front):
+        """The writing profile for a dictation about to start, as a snapshot.
+
+        Asked at the same moment as _the_front and for the same reason: once
+        the indicator is up, the program in front may be Dikte. The program is
+        only looked for when the answer could change the profile, since on
+        Linux the looking is a subprocess paid for on the key press.
+        """
+        try:
+            program = (frontapp.program_name(front)
+                       if profiles.wants_detection(self.conf) else "")
+            return profiles.choose(self.conf, program)
+        except Exception as exc:  # a profile is never worth a dictation
+            print(f"dikte: could not choose a profile: {exc}", file=sys.stderr)
+            return None
+
     def start(self):
         # Only a held microphone blocks: a previous dictation still being
         # transcribed or cleaned up is the pipeline's business, not the
@@ -761,6 +782,7 @@ class Dikte:
             self.home_messages[DICTATION] = ""
             self.home_messages.pop("dictation_stage", None)
         self.front_before = self._the_front()
+        self.profile_before = self._the_profile(self.front_before)
         self.overlay.show_recording()
         self._begin_recording(DICTATION)
         # A recorder that could not start has already said so, synchronously,
@@ -1134,6 +1156,8 @@ class Dikte:
         owner, self.recorder_owner = self.recorder_owner, None
         wants_paste = self.paste_override.pop(owner, None)
         focus, self.front_before = self.front_before, None
+        profile = getattr(self, "profile_before", None)
+        self.profile_before = None
         if owner == ASK:
             self.ask_pipeline.run(wav_path, duration, rms_values, ask=True,
                                   paste=wants_paste, focus=focus)
@@ -1141,7 +1165,7 @@ class Dikte:
             self._transcripts_pending += 1
             self._queued_retries.append(False)
             self.pipeline.run(wav_path, duration, rms_values,
-                              paste=wants_paste, focus=focus)
+                              paste=wants_paste, focus=focus, profile=profile)
 
     def retry_dictation(self, row):
         """Send a failed dictation's kept recording through the chain again.
@@ -1152,9 +1176,15 @@ class Dikte:
         """
         self._transcripts_pending += 1
         self._queued_retries.append(True)
+        # Under the profile it was first spoken under, looked up by name: the
+        # program it was spoken into is not in front now.
+        try:
+            profile = profiles.again(self.conf, row.get("profile") or "")
+        except Exception:
+            profile = None
         queued = self.pipeline.run(row.get("audio") or "",
                                    float(row.get("duration") or 0),
-                                   paste=False, retry=row)
+                                   paste=False, retry=row, profile=profile)
         if queued is False:
             self._transcripts_pending -= 1
             self._queued_retries.pop()
