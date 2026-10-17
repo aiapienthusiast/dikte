@@ -14,6 +14,7 @@ from . import hardware
 from . import i18n
 from . import paste
 from . import paths
+from . import profiles
 from .i18n import t
 
 
@@ -456,7 +457,12 @@ DEFAULTS = {
     # A stored language overrides this default. Hosted providers receive no
     # language hint in auto mode; local whisper also reports the detected code.
     "language": "auto",
+    # The personal dictionary, rendered: the records themselves live in
+    # dictionary.json (see dictionary.py), and this is kept in step with them
+    # so that an older version and `dikte config set` still read and write it.
     "transcribe_prompt": "",
+    # Learn names and terms from finished dictations. Off until asked for.
+    "dictionary_learning": False,
 
     # --- whisper.cpp, on this machine ---------------------------------------
     # The program and the model are both fetched from Settings; empty means
@@ -514,6 +520,17 @@ DEFAULTS = {
     "local_idle_minutes": 10,
 
     "cleanup_prompt": "",           # empty -> language-specific default
+
+    # --- writing profiles (profiles.py) -------------------------------------
+    # Each switch takes one part away on its own. With the Default profile
+    # empty and no named one, every one of them on still changes nothing.
+    "profile_style": True,          # apply the profiles' style preferences
+    "profile_by_app": True,         # pick the profile by the program in front
+    "translation_enabled": True,    # translate where a profile asks for it
+    "style_learning": False,        # use preferences learned from examples
+    "profile_override": "",         # a named profile for everything, or ""
+    "profile_default": {},
+    "profiles": [],
     "auto_paste": True,
     "paste_shortcut": paste.desktop().shortcuts[0],   # cmd+v on a Mac
     "restore_clipboard": False,
@@ -655,6 +672,21 @@ def _replace_with_retry(tmp, target):
             time.sleep(0.05)
 
 
+# The settings added with profiles and the dictionary, and the type each must
+# have. A value of another type (an edit by hand, a fork) falls back to the
+# default rather than reaching code that would trip over it.
+_SHAPES = {
+    "dictionary_learning": bool,
+    "profile_style": bool,
+    "profile_by_app": bool,
+    "translation_enabled": bool,
+    "style_learning": bool,
+    "profile_override": str,
+    "profile_default": dict,
+    "profiles": list,
+}
+
+
 # Corners used to be stored with Turkish names.
 _CORNER_MIGRATION = {
     "sol-alt": "bottom-left", "sağ-alt": "bottom-right",
@@ -675,6 +707,10 @@ def _local_thread_count(value):
 class Config:
     def __init__(self):
         self.data = dict(DEFAULTS)
+        # Copies of the two containers, so that no Config can change the
+        # defaults every other one starts from.
+        self.data["profile_default"] = {}
+        self.data["profiles"] = []
         self.load()
 
     def load(self):
@@ -710,6 +746,9 @@ class Config:
         self.data["overlay_corner"] = _CORNER_MIGRATION.get(
             self.data["overlay_corner"], self.data["overlay_corner"]
         )
+        for key, kind in _SHAPES.items():
+            if not isinstance(self.data[key], kind):
+                self.data[key] = type(DEFAULTS[key])(DEFAULTS[key])
         stored_prompt = self.data["cleanup_prompt"].strip()
         if stored_prompt and _fingerprint(stored_prompt) in LEGACY_PROMPTS:
             self.data["cleanup_prompt"] = ""
@@ -854,7 +893,8 @@ class Config:
         return self["cleanup_provider"] == "local"
 
     def cleanup_prompt(self, with_timestamps=False, with_speakers=False,
-                       subtitles=False, speech="", participants=True):
+                       subtitles=False, speech="", participants=True,
+                       profile=None):
         """`speech` is the two-letter code of the language that was heard, when
         the transcription model reported one. The default prompts and the
         glossary rule only exist in Turkish and English, so a detected Turkish
@@ -863,26 +903,63 @@ class Config:
         language the transcript is in. Nothing else calls this with it, so the
         interface language keeps deciding everywhere the speech was not asked
         about. `participants` is whether the meeting's names belong in the
-        glossary; a file's speakers are numbered, not the people in a meeting."""
+        glossary; a file's speakers are numbered, not the people in a meeting.
+
+        `profile` is the profiles.Choice of a dictation, and only a dictation
+        passes one: files, meetings and the agent never do, so nothing about
+        a profile can reach their prompts. The prompt is built in this order,
+        each part only when there is something in it:
+
+            1. the base: the user's own cleanup instruction if there is one,
+               otherwise the built-in one; or, when translation is asked for
+               with cleanup switched off, the translate-only prompt
+            2. the glossary, from the personal dictionary
+            3. the profile's writing style (not with cleanup off: there is no
+               rewrite for it to shape)
+            4. the translation rule
+            5. the timestamp and speaker rules, which only files and meetings
+               ask for
+
+        A custom instruction replaces the built-in base and nothing else: the
+        glossary, the style and the translation are still added after it.
+        Switching the profile style off in Settings is how a custom
+        instruction is left to stand alone."""
         turkish = (speech == "tr") if speech else i18n.language() == "tr"
+        translate_only = (profile is not None and bool(profile.translate_to)
+                          and not subtitles and not self["cleanup_enabled"])
         if subtitles:
             prompt = (self["file_cleanup_prompt"].strip()
                       or (FILE_CLEANUP_PROMPT_TR if turkish
                           else FILE_CLEANUP_PROMPT_EN))
+        elif translate_only:
+            prompt = profiles.translate_only_prompt(profile, turkish)
         else:
             prompt = (self["cleanup_prompt"].strip()
                       or (CLEANUP_PROMPT_TR if turkish else CLEANUP_PROMPT_EN))
-        glossary = self["transcribe_prompt"].strip()
+        glossary = self.dictionary_glossary()
         if with_speakers and participants:
             glossary = "\n".join(x for x in (glossary, self.participants()) if x)
         if glossary:
             rule = GLOSSARY_RULE_TR if turkish else GLOSSARY_RULE_EN
             prompt += rule.format(glossary=glossary)
+        if profile is not None and not subtitles and not translate_only:
+            prompt += profiles.style_section(profile, turkish)
+            prompt += profiles.translation_section(profile, turkish)
         if with_timestamps:
             prompt += TIMESTAMP_RULE_TR if turkish else TIMESTAMP_RULE_EN
         if with_speakers:
             prompt += SPEAKER_RULE_TR if turkish else SPEAKER_RULE_EN
         return prompt
+
+    def dictionary_hint(self):
+        """The personal dictionary as the transcription model is told it."""
+        from . import dictionary  # it imports this module
+        return dictionary.hint(self)
+
+    def dictionary_glossary(self):
+        """The personal dictionary as the cleanup model is told it."""
+        from . import dictionary
+        return dictionary.glossary(self)
 
     def assistant_prompt(self):
         return self["assistant_prompt"].strip() or default_assistant_prompt()
@@ -912,7 +989,7 @@ class Config:
 
     def meeting_hint(self):
         """The transcription hint: the dictation glossary plus the names."""
-        return "\n".join(x for x in (self["transcribe_prompt"].strip(),
+        return "\n".join(x for x in (self.dictionary_hint().strip(),
                                      self.participants()) if x)
 
     def speaker_names(self):
