@@ -17,7 +17,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -46,6 +46,9 @@ class _Relay(QObject):
     something that still exists; the editor's own connection goes with it."""
 
     found = pyqtSignal(object, str)
+    # A question's number, the program in front, and its title when it is a
+    # browser: what Add site reads after its countdown.
+    titled = pyqtSignal(object, str, str)
 
 
 _RELAY = []
@@ -442,6 +445,38 @@ class ProfilesEditor(QWidget):
         self.apps.textEdited.connect(self._edited)
         self.apps_label = QLabel(t("Programs"))
         form.addRow(self.apps_label, self.apps)
+
+        # Sites: keywords looked for in a browser's window title. A list of
+        # their own rather than a line like the programs, because one is
+        # usually picked up from the tab rather than typed.
+        self.sites = QListWidget()
+        self.sites.setMaximumHeight(80)
+        self.sites.itemChanged.connect(self._site_renamed)
+        self.site_edit = QLineEdit()
+        self.site_edit.setPlaceholderText(t("e.g. WhatsApp, Gmail, YouTube"))
+        self.site_edit.returnPressed.connect(self._add_typed_site)
+        self.add_site_button = QPushButton(t("Add"))
+        self.add_site_button.clicked.connect(self._add_typed_site)
+        self.read_site_button = QPushButton(t("Add site…"))
+        self.read_site_button.setToolTip(t(
+            "Counts down three seconds: switch to the browser tab in the "
+            "meantime, and the site is read from its title."))
+        self.read_site_button.clicked.connect(self.start_site_countdown)
+        self.remove_site_button = QPushButton(t("Remove site"))
+        self.remove_site_button.clicked.connect(self.remove_selected_sites)
+        self.site_status = _muted()
+        self.sites_note = _muted(self.sites_text())
+        sites = QVBoxLayout()
+        sites.addWidget(self.sites)
+        typed = QHBoxLayout()
+        typed.addWidget(self.site_edit, 1)
+        typed.addWidget(self.add_site_button)
+        sites.addLayout(typed)
+        sites.addLayout(_row(self.read_site_button, self.remove_site_button))
+        sites.addWidget(self.site_status)
+        sites.addWidget(self.sites_note)
+        self.sites_label = QLabel(t("Sites"))
+        form.addRow(self.sites_label, sites)
         self.style_boxes = {}
         for key, (title, values) in STYLE_LABELS.items():
             box = QComboBox()
@@ -499,6 +534,13 @@ class ProfilesEditor(QWidget):
         self._find_timer.setSingleShot(True)
         self._find_timer.timeout.connect(self._show_found)
         _relay().found.connect(self._found)
+        _relay().titled.connect(self._titled)
+        self._site_question = None
+        self._site_target = None
+        self._countdown = 0
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._tick)
         self._asked = 0
 
     # ---- the form ---------------------------------------------------------
@@ -552,6 +594,137 @@ class ProfilesEditor(QWidget):
         return t("The program in front is looked up when a recording starts. "
                  "When it cannot be found out or no profile lists it, the Default "
                  "profile is used, and the history names the profile and the program.")
+
+    @staticmethod
+    def sites_text():
+        """What reading a site involves, said next to the sites themselves."""
+        if frontapp.backend() is frontapp._macos:
+            return t("Site matching is not available on macOS: reading another "
+                     "program's window title needs a permission Dikte does not "
+                     "ask for. Programs still match.")
+        return t("When a dictation starts in a browser, its window title is read "
+                 "once to match these sites. Titles are never saved: the history "
+                 "keeps only the site that matched. A site wins over a program, "
+                 "so a browser listed above is used for every other site.")
+
+    # ---- sites ------------------------------------------------------------
+
+    def add_site(self, keyword, profile=None):
+        """Add a keyword to a named profile (the selected one by default);
+        False when it is empty, already there, or the profile is Default."""
+        profile = self.current() if profile is None else profile
+        if profile is self._default or not any(profile is p for p in self._named):
+            return False
+        keyword = " ".join((keyword or "").split())[:60]
+        if not keyword or profiles.fold(keyword) in (
+                profiles.fold(s) for s in profile["sites"]):
+            return False
+        profile["sites"] = profile["sites"] + [keyword]
+        if profile is self.current():
+            self._fill_sites(profile)
+        self.changed.emit()
+        return True
+
+    def remove_selected_sites(self):
+        profile = self.current()
+        rows = {self.sites.row(item) for item in self.sites.selectedItems()}
+        if profile is self._default or not rows:
+            return
+        profile["sites"] = [s for i, s in enumerate(profile["sites"]) if i not in rows]
+        self._fill_sites(profile)
+        self.changed.emit()
+
+    def _add_typed_site(self):
+        if self.add_site(self.site_edit.text()):
+            self.site_edit.clear()
+            self.site_status.setText("")
+
+    def _site_renamed(self, item):
+        """A keyword edited in place in the list."""
+        if self._filling:
+            return
+        profile = self.current()
+        if profile is self._default:
+            return
+        sites = [self.sites.item(i).text() for i in range(self.sites.count())]
+        profile["sites"] = profiles.clean({"sites": sites})["sites"]
+        self._fill_sites(profile)
+        self.changed.emit()
+
+    def start_site_countdown(self):
+        """Give the user three seconds to bring the tab forward, counting them
+        out loud, then read the window in front."""
+        if self.current() is self._default:
+            return
+        self._site_target = self.current()
+        self._countdown = 3
+        self.read_site_button.setEnabled(False)
+        self._show_countdown()
+        self._countdown_timer.start()
+
+    def _show_countdown(self):
+        self.site_status.setText(t("Switch to the tab… {seconds}",
+                                   seconds=self._countdown))
+
+    def _tick(self):
+        self._countdown -= 1
+        if self._countdown > 0:
+            self._show_countdown()
+            return
+        self._countdown_timer.stop()
+        self.site_status.setText(t("Reading the window in front…"))
+        self._read_site()
+
+    def _read_site(self):
+        """Off the main thread, like Find the program name, and answered
+        through the same relay."""
+        self._site_question = next(_QUESTIONS)
+        asked, relay = self._site_question, _relay()
+
+        def work():
+            program, title = frontapp.front(None, profiles.is_browser)
+            relay.titled.emit(asked, program, title)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _titled(self, asked, program, title):
+        if asked != self._site_question:
+            return
+        self._site_question = None
+        self.read_site_button.setEnabled(True)
+        target, self._site_target = self._site_target, None
+        if not program:
+            self.site_status.setText(t("The program in front could not be found out."))
+            return
+        if not profiles.is_browser(program):
+            self.site_status.setText(t(
+                "In front: {name}, which is not a browser Dikte knows. List it "
+                "under Programs instead.", name=program))
+            return
+        keyword = profiles.propose_site(title)
+        if not keyword:
+            self.site_status.setText(t(
+                "Read from {browser}, but its window had no title to take a "
+                "site from.", browser=program))
+            return
+        # Shown so the user can see where the keyword came from. Only on
+        # screen: the title is not stored anywhere.
+        added = target is not None and self.add_site(keyword, target)
+        self.site_status.setText(t(
+            "Read from {browser}: “{title}”. Added “{site}”; double-click it "
+            "to change it.", browser=program, title=title, site=keyword)
+            if added else t(
+            "Read from {browser}: “{title}”. “{site}” is already listed.",
+            browser=program, title=title, site=keyword))
+
+    def _fill_sites(self, profile):
+        filling, self._filling = self._filling, True
+        self.sites.clear()
+        for keyword in profile.get("sites", []):
+            item = QListWidgetItem(keyword)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self.sites.addItem(item)
+        self._filling = filling
 
     # ---- the profiles -----------------------------------------------------
 
@@ -671,6 +844,11 @@ class ProfilesEditor(QWidget):
         self.apps.setText(", ".join(profile.get("apps", [])))
         self.apps.setEnabled(named)
         self.apps_label.setEnabled(named)
+        self._fill_sites(profile)
+        for widget in (self.sites, self.site_edit, self.add_site_button,
+                       self.read_site_button, self.remove_site_button,
+                       self.sites_label):
+            widget.setEnabled(named)
         for key, box in self.style_boxes.items():
             index = box.findData(profile["style"].get(key, ""))
             box.setCurrentIndex(max(0, index))
