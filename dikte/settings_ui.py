@@ -982,6 +982,9 @@ def history_marks(row):
         if isinstance(program, str):
             marks += (t(" ({program})", program=program) if program
                       else t(" (program unknown)"))
+        site = row.get("site")
+        if isinstance(site, str) and site:
+            marks += t("  ·  site: {site}", site=site)
     code = row.get("translate_to")
     if isinstance(code, str) and code:
         language = t(profiles.language_name(code))

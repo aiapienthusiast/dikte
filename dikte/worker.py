@@ -419,6 +419,9 @@ class Pipeline(QObject):
             # out, which is worth saying, and a skipped lookup is not.
             if profile.looked:
                 record["program"] = profile.program
+            # The keyword that matched, never the title it matched in.
+            if profile.site:
+                record["site"] = profile.site
 
     def _learn(self, raw, text, speech_language):
         """Hand a finished dictation to the dictionary. Never at the cost of

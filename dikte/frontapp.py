@@ -19,8 +19,15 @@ way paste.py and audio.py are laid out:
             the answer is unknown
 
 The name is the program's own (thunderbird, slack, code, firefox), lower case
-and without an .exe, which is what a profile lists. A browser is the browser:
-which site is open in it is not asked.
+and without an .exe, which is what a profile lists.
+
+For a browser, the window title can be read as well, so that a profile can be
+chosen by the site in the tab: front() takes a `title_for` test and reads the
+title only for a program it says yes to. Each backend does that in at most one
+more call: X11 asks for the title in the request it already makes, KDE adds
+one kdotool call, Windows one GetWindowTextW. macOS would need the Screen
+Recording permission for other programs' titles, so it reads none. A title is
+returned to the caller and nothing else: it is never logged or kept here.
 """
 
 import ctypes
@@ -79,7 +86,13 @@ def _process_name(pid):
 
 # --- macOS ------------------------------------------------------------------
 
-def _macos(pid):
+def _macos(pid, title_for=None):
+    """The name only: no title on macOS (see the module docstring)."""
+    name = _macos_name(pid)
+    return name if title_for is None else (name, "")
+
+
+def _macos_name(pid):
     from . import mac_window
     if not pid:
         pid = mac_window.frontmost_pid()
@@ -119,6 +132,8 @@ def _win_api():
     user32.GetForegroundWindow.restype = ctypes.c_void_p
     user32.GetWindowThreadProcessId.argtypes = [
         ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
     kernel32.QueryFullProcessImageNameW.argtypes = [
@@ -128,44 +143,86 @@ def _win_api():
     return user32, kernel32
 
 
-def _windows(_pid=None):
+def _windows(_pid=None, title_for=None):
+    name, title = "", ""
     try:
         user32, kernel32 = _win_api()
         window = user32.GetForegroundWindow()
-        if not window:
-            return ""
-        pid = ctypes.c_ulong(0)
-        user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-        if not pid.value:
-            return ""
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.value)
-        if not handle:
-            return ""
-        try:
-            size = ctypes.c_ulong(1024)
-            buffer = ctypes.create_unicode_buffer(size.value)
-            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer,
-                                                       ctypes.byref(size)):
-                return ""
-            return buffer.value
-        finally:
-            kernel32.CloseHandle(handle)
+        if window:
+            name = _win_image(user32, kernel32, window)
+            if name and title_for is not None and title_for(_clean(name)):
+                length = user32.GetWindowTextLengthW(window)
+                if length > 0:
+                    buffer = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(window, buffer, length + 1)
+                    title = buffer.value
     except Exception:
+        pass
+    return name if title_for is None else (name, title)
+
+
+def _win_image(user32, kernel32, window):
+    pid = ctypes.c_ulong(0)
+    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+    if not pid.value:
         return ""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.value)
+    if not handle:
+        return ""
+    try:
+        size = ctypes.c_ulong(1024)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer,
+                                                   ctypes.byref(size)):
+            return ""
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 # --- Linux ------------------------------------------------------------------
 
-def _x11(_pid=None):
-    if not shutil.which("xprop"):
+def _xprop_string(value):
+    """A string as xprop prints one: in quotes, with backslash escapes, and
+    with bytes it would not print as octal escapes of UTF-8."""
+    value = value.strip()
+    if len(value) < 2 or value[0] != '"' or value[-1] != '"':
         return ""
+    out, i, inner = bytearray(), 0, value[1:-1]
+    while i < len(inner):
+        char = inner[i]
+        if char == "\\" and i + 1 < len(inner):
+            digits = inner[i + 1:i + 4]
+            if len(digits) == 3 and all(c in "01234567" for c in digits):
+                out.append(int(digits, 8) & 0xFF)
+                i += 4
+                continue
+            out.extend(inner[i + 1].encode("utf-8"))
+            i += 2
+            continue
+        out.extend(char.encode("utf-8"))
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _x11(_pid=None, title_for=None):
+    def answer(name, title=""):
+        return name if title_for is None else (name, title)
+
+    if not shutil.which("xprop"):
+        return answer("")
     active = _run(["xprop", "-root", "_NET_ACTIVE_WINDOW"])
     # "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00007"
     window = active.rsplit("#", 1)[-1].strip().split(",")[0].strip()
     if not window.startswith("0x") or int(window, 16) == 0:
-        return ""
-    found = _run(["xprop", "-id", window, "_NET_WM_PID", "WM_CLASS"])
-    pid, klass = "", ""
+        return answer("")
+    # The title rides along in the request already made, so it costs no
+    # call of its own; it is only kept below for a program that wants it.
+    wanted = ["_NET_WM_PID", "WM_CLASS"]
+    if title_for is not None:
+        wanted += ["_NET_WM_NAME", "WM_NAME"]
+    found = _run(["xprop", "-id", window] + wanted)
+    pid, klass, utf8_name, plain_name = "", "", "", ""
     for line in found.splitlines():
         if line.startswith("_NET_WM_PID") and "=" in line:
             pid = line.split("=", 1)[1].strip()
@@ -174,31 +231,44 @@ def _x11(_pid=None):
             # class, which is the program; the first is one of its windows.
             parts = [p.strip().strip('"') for p in line.split("=", 1)[1].split(",")]
             klass = parts[-1] if parts else ""
+        elif line.startswith("_NET_WM_NAME") and "=" in line:
+            utf8_name = _xprop_string(line.split("=", 1)[1])
+        elif line.startswith("WM_NAME") and "=" in line:
+            plain_name = _xprop_string(line.split("=", 1)[1])
     # The class first: the process behind a window is often a runtime shared
     # by many programs, and a Flatpak's pid is not even one of this system's.
-    if klass:
-        return klass
-    return _process_name(pid) if pid.isdigit() else ""
+    name = klass or (_process_name(pid) if pid.isdigit() else "")
+    title = ""
+    if title_for is not None and name and title_for(_clean(name)):
+        title = utf8_name or plain_name
+    return answer(name, title)
 
 
-def _kde_wayland(_pid=None):
+def _kde_wayland(_pid=None, title_for=None):
     """KWin through kdotool, the one Wayland compositor with a way to ask.
     The window class first, for the same reason as under X11, and the process
-    only when there is no class."""
+    only when there is no class. The title is one more call, made only for a
+    program that wants it."""
+    def answer(name, title=""):
+        return name if title_for is None else (name, title)
+
     if not shutil.which("kdotool"):
-        return ""
+        return answer("")
     window = _run(["kdotool", "getactivewindow"]).strip()
     if not window:
-        return ""
-    klass = _run(["kdotool", "getwindowclassname", window]).strip()
-    if klass:
-        return klass
-    pid = _run(["kdotool", "getwindowpid", window]).strip()
-    return _process_name(pid) if pid.isdigit() else ""
+        return answer("")
+    name = _run(["kdotool", "getwindowclassname", window]).strip()
+    if not name:
+        pid = _run(["kdotool", "getwindowpid", window]).strip()
+        name = _process_name(pid) if pid.isdigit() else ""
+    title = ""
+    if title_for is not None and name and title_for(_clean(name)):
+        title = _run(["kdotool", "getwindowname", window]).strip()
+    return answer(name, title)
 
 
-def _unknown(_pid=None):
-    return ""
+def _unknown(_pid=None, title_for=None):
+    return "" if title_for is None else ("", "")
 
 
 def backend():
@@ -225,3 +295,18 @@ def program_name(pid=None):
         return _clean(backend()(pid))
     except Exception:
         return ""
+
+
+def front(pid=None, title_for=None):
+    """(program, title) of the window in front. The title is read only when
+    `title_for(program)` says so, and is "" otherwise or when it cannot be."""
+    if title_for is None:
+        return program_name(pid), ""
+    try:
+        found = backend()(pid, title_for=title_for)
+    except Exception:
+        return "", ""
+    if isinstance(found, str):
+        found = (found, "")
+    name, title = found
+    return _clean(name), (title or "").strip()

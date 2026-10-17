@@ -148,8 +148,30 @@ Yanıtın SADECE çeviri olsun, başka hiçbir şey yazma."""
 # `looked` is whether the program in front was asked for at all: an override,
 # the switch being off, or no profile listing a program all skip the asking,
 # and then an empty `program` means nothing.
+# `site` is the keyword that matched the browser tab's title, "" when the
+# profile was not chosen by a site. The title itself is never kept.
 Choice = collections.namedtuple(
-    "Choice", "name program style instruction translate_to shown id looked")
+    "Choice", "name program style instruction translate_to shown id looked site")
+
+# The browsers whose window title is read to match a profile's sites, by every
+# name the program in front can arrive under: the executable, the X11 window
+# class, the Wayland application id, and the Windows image. The one list there
+# is: frontapp asks is_browser() here before it reads any title.
+BROWSERS = frozenset("""
+firefox firefox-esr firefox-developer-edition firefox-nightly navigator
+zen zen-browser zen-alpha zen-beta zen-twilight
+chromium chromium-browser
+google-chrome google-chrome-stable google-chrome-beta google-chrome-unstable
+chrome
+brave brave-browser brave-browser-stable
+vivaldi vivaldi-stable vivaldi-bin
+opera
+microsoft-edge microsoft-edge-stable microsoft-edge-beta msedge
+librewolf floorp waterfox
+org.mozilla.firefox app.zen_browser.zen io.gitlab.librewolf-community
+org.chromium.chromium com.google.chrome com.brave.browser com.vivaldi.vivaldi
+com.opera.opera com.microsoft.edge one.ablaze.floorp net.waterfox.waterfox
+""".split())
 
 _ID = re.compile(r"^[a-z0-9]{1,32}$")
 
@@ -178,6 +200,95 @@ def _programs(raw):
     return out
 
 
+def _sites(raw):
+    """Site keywords as typed, each once (compared folded), at most fifty."""
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for item in raw:
+        word = " ".join(item.split())[:60] if isinstance(item, str) else ""
+        if word and fold(word) not in seen:
+            seen.add(fold(word))
+            out.append(word)
+    return out[:50]
+
+
+def fold(text):
+    from .dictionary import fold as dictionary_fold  # it imports config, which imports this
+    return dictionary_fold(text)
+
+
+def is_browser(program):
+    """Whether the program in front is a browser whose title names the site."""
+    key = program_key(program)
+    if key in BROWSERS:
+        return True
+    parts = key.split(".")
+    return len(parts) >= 3 and all(parts) and parts[-1] in BROWSERS
+
+
+def site_in(keyword, title):
+    """Whether `keyword` stands in `title` as whole words, without regard to
+    case: "Mail" is in "Inbox - Mail" and not in "Gmail"."""
+    keyword, title = fold(keyword).strip(), fold(title)
+    if not keyword:
+        return False
+    return re.search(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", title) is not None
+
+
+def for_site(conf, title):
+    """(profile, keyword) for the first named profile with a site in `title`,
+    or (None, "")."""
+    if not title:
+        return None, ""
+    for profile in named_profiles(conf):
+        for keyword in profile["sites"]:
+            if site_in(keyword, title):
+                return profile, keyword
+    return None, ""
+
+
+def wants_titles(conf):
+    """Whether the tab title is worth reading: some profile lists a site, and
+    the program is going to be looked up anyway."""
+    return wants_detection(conf) and any(p["sites"] for p in named_profiles(conf))
+
+
+# Separators a browser puts between the parts of a title, and between the
+# page and its own name: the em dash (Firefox and Zen), the en dash, a hyphen
+# (Chrome and its kin), the vertical bar and the middle dot.
+_TITLE_PARTS = re.compile(r"\s+(?:\u2014|\u2013|-|\||\u00b7)\s+")
+_BROWSER_WORDS = ("firefox", "chrome", "chromium", "brave", "vivaldi", "opera",
+                  "edge", "librewolf", "floorp", "waterfox", "zen browser",
+                  "mozilla", "zen")
+_DOMAIN = re.compile(r"^(?:[\w-]+\.)*([\w-]+)\.[a-z]{2,}$", re.IGNORECASE)
+
+
+def propose_site(title):
+    """A keyword for the site a tab title belongs to, for the user to check.
+
+    The browser's own name goes first, then the site is usually the last part
+    left ("Video - YouTube", "Inbox - you@x.com - Gmail"). A count of unread
+    items in front of it ("(2) WhatsApp") is dropped, a domain becomes its
+    name (web.whatsapp.com: whatsapp), and a long part gives up its last word."""
+    parts = [p.strip() for p in _TITLE_PARTS.split(title or "") if p.strip()]
+    # Whole words, so a page called "Knowledge base" is not taken for Edge.
+    while len(parts) > 1 and any(site_in(w, parts[-1]) for w in _BROWSER_WORDS):
+        parts.pop()
+    if not parts:
+        return ""
+    site = re.sub(r"^\(\d+\+?\)\s*", "", parts[-1]).strip()
+    domain = _DOMAIN.match(site)
+    if domain:
+        return domain.group(1)
+    words = site.split()
+    if len(words) > 3:
+        site = words[-1]
+    return site[:60]
+
+
 def program_key(name):
     """A program name in the form profiles are matched on."""
     name = (name or "").strip().lower()
@@ -201,6 +312,7 @@ def clean(raw, named=True):
     if named:
         out["name"] = _text(raw.get("name"), 60)
         out["apps"] = _programs(raw.get("apps"))
+        out["sites"] = _sites(raw.get("sites"))
         ident = raw.get("id")
         out["id"] = ident if isinstance(ident, str) and _ID.match(ident) else ""
     return out
@@ -248,7 +360,7 @@ def wants_detection(conf):
     moment it is paid is the key press."""
     if not conf["profile_by_app"] or override(conf):
         return False
-    return any(p["apps"] for p in named_profiles(conf))
+    return any(p["apps"] or p["sites"] for p in named_profiles(conf))
 
 
 def override(conf):
@@ -304,7 +416,7 @@ def effective_style(conf, profile):
     return style
 
 
-def snapshot(conf, profile, program="", looked=False):
+def snapshot(conf, profile, program="", looked=False, site=""):
     """The Choice for a recording under `profile` (None is Default)."""
     name = profile["name"] if profile is not None else ""
     ident = profile["id"] if profile is not None else ""
@@ -319,16 +431,25 @@ def snapshot(conf, profile, program="", looked=False):
         shown=in_use(conf),
         id=ident,
         looked=bool(looked),
+        site=site if profile is not None and isinstance(site, str) else "",
     )
 
 
-def choose(conf, program="", looked=False):
+def choose(conf, program="", looked=False, title=""):
     """The Choice for a recording started with `program` in front. `looked`
-    says whether that program was asked for, or skipped as not needed."""
-    chosen = override(conf)
+    says whether that program was asked for, or skipped as not needed.
+
+    `title` is the browser tab's title, when it was read. A site in it wins,
+    then the program, then Default: a browser on a site nobody listed falls
+    back to a profile that lists the browser itself. The title is only looked
+    at here and goes no further."""
+    chosen, site = override(conf), ""
     if chosen is None and conf["profile_by_app"]:
-        chosen = for_program(conf, program)
-    return snapshot(conf, chosen, program, looked)
+        if title and is_browser(program):
+            chosen, site = for_site(conf, title)
+        if chosen is None:
+            chosen = for_program(conf, program)
+    return snapshot(conf, chosen, program, looked, site)
 
 
 def again(conf, row):
@@ -338,7 +459,8 @@ def again(conf, row):
     program = row.get("program")
     looked = isinstance(program, str)
     profile = by_name(conf, row.get("profile"), row.get("profile_id"))
-    return snapshot(conf, profile, program if looked else "", looked)
+    return snapshot(conf, profile, program if looked else "", looked,
+                    row.get("site") or "")
 
 
 def display_name(choice):

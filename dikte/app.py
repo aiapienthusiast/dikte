@@ -148,9 +148,9 @@ class _ProfileLookup:
         else:
             self._choose("", looked=False)
 
-    def _choose(self, program, looked=True):
+    def _choose(self, program, looked=True, title=""):
         try:
-            choice = profiles.choose(self._conf, program, looked)
+            choice = profiles.choose(self._conf, program, looked, title)
         except Exception as exc:  # a profile is never worth a dictation
             print(f"dikte: could not choose a profile: {exc}", file=sys.stderr)
             return
@@ -159,7 +159,14 @@ class _ProfileLookup:
                 self._choice = choice
 
     def _look(self):
-        self._choose(frontapp.program_name(self._front))
+        # The title, for a browser, only when some profile lists a site. It
+        # goes into the choice and no further: the Choice keeps the keyword
+        # that matched, never the title.
+        if profiles.wants_titles(self._conf):
+            program, title = frontapp.front(self._front, profiles.is_browser)
+        else:
+            program, title = frontapp.program_name(self._front), ""
+        self._choose(program, title=title)
 
     def result(self):
         if self._thread is not None:
