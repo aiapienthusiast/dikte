@@ -122,18 +122,56 @@ EMPTY, UNREADABLE = object(), object()
 WIN_MODIFIERS = (0x10, 0x11, 0x12, 0x5B, 0x5C)
 
 
+# What the clipboard tools call text, besides the text/* MIME types.
+_TEXT_TARGETS = {"UTF8_STRING", "STRING", "TEXT", "COMPOUND_TEXT"}
+WAYLAND_TYPES = ["wl-paste", "--list-types"]
+X11_TARGETS = ["xclip", "-selection", "clipboard", "-out", "-target", "TARGETS"]
+
+
 def snapshot():
     """The clipboard as restore() can put it back, or EMPTY, or UNREADABLE."""
+    here = paste.desktop()
+    if here in (paste.WAYLAND, paste.X11):
+        # read_clipboard() answers None for an empty clipboard and for one it
+        # could not read alike, and only the first may be emptied again; nor
+        # may an image be read back as bytes and restored as text. The list
+        # of types on offer settles both.
+        kind = _linux_clipboard_kind(here)
+        if kind != "text":
+            return EMPTY if kind == "empty" else UNREADABLE
     previous = paste.read_clipboard()
-    if paste.desktop() is paste.WINDOWS:
+    if here is paste.WINDOWS:
         # Only text is read there, so b"" is either an empty clipboard or one
         # holding something else; the format count tells the two apart.
         if previous == b"":
             return EMPTY if _win_clipboard_empty() else UNREADABLE
-        return UNREADABLE if previous is None else previous
-    # wl-paste and xclip answer None both for an empty clipboard and for one
-    # they could not read, and the second must not be wiped.
     return UNREADABLE if previous is None else previous
+
+
+def _linux_clipboard_kind(here):
+    """'empty', 'text', or 'other' (non-text, or the question failed)."""
+    argv = WAYLAND_TYPES if here is paste.WAYLAND else X11_TARGETS
+    if not shutil.which(argv[0]):
+        return "other"
+    try:
+        res = subprocess.run(argv, capture_output=True, timeout=3)
+    except (subprocess.SubprocessError, OSError):
+        return "other"
+    types = [line.strip() for line in res.stdout.decode("utf-8", "replace")
+             .splitlines() if line.strip()]
+    if res.returncode != 0 or not types:
+        # Both tools fail when no program owns the clipboard, which is what
+        # an empty one is; anything else they say is a reason not to touch it.
+        # wl-paste says "No selection" or "Nothing is copied"; xclip, asked
+        # for TARGETS with no owner, says the target is "not available".
+        err = res.stderr.decode("utf-8", "replace").lower()
+        empty = not types and (res.returncode == 0 or any(
+            phrase in err for phrase in ("no selection", "nothing is copied",
+                                         "not available")))
+        return "empty" if empty else "other"
+    if any(name.startswith("text/") or name in _TEXT_TARGETS for name in types):
+        return "text"
+    return "other"
 
 
 def _win_clipboard_empty():
@@ -191,6 +229,9 @@ def copy_selection(focus=None, cancelled=None):
             return ""
         if paste.desktop() is paste.WINDOWS:
             _win_let_go_of_modifiers()
+            # That can take a second, long enough for the run to be called off.
+            if cancelled is not None and cancelled.is_set():
+                return ""
         paste.press(copy_shortcut(), delay=COPY_DELAY, focus=focus)
         time.sleep(SETTLE)
         return paste.read_text() or ""
@@ -233,6 +274,22 @@ def capture(focus=None, cancelled=None):
 
 def _selected(text, source):
     return Selection(text, source) if text and text.strip() else NOTHING
+
+
+class NoGrab:
+    """A question that reads no selection: nothing pressed, clipboard untouched.
+
+    For a provider that cannot be run without tools, which is never sent
+    selected text, so there is no reason to read any.
+    """
+
+    focus = None
+
+    def result(self, timeout=10):
+        return NOTHING
+
+    def cancel(self):
+        pass
 
 
 class Grab:
@@ -384,6 +441,12 @@ def apply(text, conf, focus=None):
     """
     with _paste_lock():
         saved = snapshot()
+        if saved is UNREADABLE:
+            # Pasting goes through the clipboard, and what is on it now (an
+            # image, files) could not be put back afterwards.
+            raise paste.PasteError(t(
+                "The clipboard holds something that cannot be put back, so "
+                "nothing was pasted. Use Copy instead."))
         paste.copy(text)
         try:
             paste.press(conf["paste_shortcut"], delay=APPLY_DELAY, focus=focus)

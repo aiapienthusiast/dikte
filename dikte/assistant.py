@@ -332,8 +332,10 @@ class _SessionGone(Exception):
 
 def _ask_claude(prompt, conf, session, on_stage, should_stop, keep=True,
                 tool_free=False, system=None):
+    # A prompt with selected text in it goes in on stdin, which `claude -p`
+    # reads when no prompt is given, so that it stays out of the process list.
     cmd = [
-        "claude", "-p", prompt,
+        "claude", "-p", *([] if tool_free else [prompt]),
         "--output-format", "stream-json", "--verbose",
         "--model", conf["assistant_model"],
         # dontAsk rather than the configured mode, which may be
@@ -372,7 +374,11 @@ def _ask_claude(prompt, conf, session, on_stage, should_stop, keep=True,
                 found["answer"] = answer
             found["warning"] = _denial_warning(event)
 
-    code, stderr = _stream(cmd, conf, on_event, should_stop)
+    if tool_free:
+        code, stderr = _stream(cmd, conf, on_event, should_stop,
+                               stdin_text=prompt)
+    else:
+        code, stderr = _stream(cmd, conf, on_event, should_stop)
     return _conclude(found, code, stderr, session, "claude", keep)
 
 
@@ -608,11 +614,12 @@ def _ask_chat(name, service, prompt, conf, on_stage, keep=True, system=None):
 
 # --- running a CLI --------------------------------------------------------
 
-def _stream(cmd, conf, on_event, should_stop):
+def _stream(cmd, conf, on_event, should_stop, stdin_text=None):
     """Run cmd, hand every JSON line it prints to on_event.
 
     Returns (exit code, stderr). Raises Cancelled when the stop was asked for,
-    and AssistantError when the clock ran out.
+    and AssistantError when the clock ran out. `stdin_text`, when given, is
+    written to the process's stdin, which is otherwise closed.
     """
     # stderr lands in a file rather than a pipe: nobody drains it while stdout
     # is being read, and a CLI chatty enough on stderr would fill the pipe's
@@ -624,7 +631,8 @@ def _stream(cmd, conf, on_event, should_stop):
     grouped = {"start_new_session": True} if os.name == "posix" else {}
     try:
         proc = subprocess.Popen(
-            cmd, cwd=working_dir(conf), stdin=subprocess.DEVNULL,
+            cmd, cwd=working_dir(conf),
+            stdin=subprocess.DEVNULL if stdin_text is None else subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=stderr_file,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=paths.NO_WINDOW,
@@ -646,6 +654,11 @@ def _stream(cmd, conf, on_event, should_stop):
         daemon=True,
     )
     watchdog.start()
+    if stdin_text is not None:
+        # From the side, so a pipe smaller than the prompt cannot stall the
+        # read below while the CLI waits for the rest of its input.
+        threading.Thread(target=_feed, args=(proc.stdin, stdin_text),
+                         daemon=True).start()
 
     try:
         for line in proc.stdout:
@@ -705,6 +718,18 @@ def _conclude(found, code, stderr, session, name, keep=True):
     if found["session"] and keep:
         write_session(name, found["session"])
     return found["answer"], found["warning"]
+
+
+def _feed(pipe, text):
+    try:
+        pipe.write(text)
+    except (OSError, ValueError):
+        pass   # the process is gone; the stream says why
+    finally:
+        try:
+            pipe.close()
+        except (OSError, ValueError):
+            pass
 
 
 def _watch(proc, deadline, should_stop, ended):

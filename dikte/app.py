@@ -180,9 +180,6 @@ class Dikte:
         # key press and the window its answer is shown in.
         self.assist_grab = None
         self.answer_window = None
-        # Replaced answer windows whose Apply or Copy is still running, kept
-        # alive until it has finished and reported.
-        self._retired_answers = []
 
         self.overlay = Overlay(self.conf["overlay_corner"],
                                screen_name=self.conf["overlay_screen"],
@@ -827,7 +824,10 @@ class Dikte:
         self.front_before = self._the_front()
         # Before the indicator goes up, while the window holding the selection
         # still has the keyboard: on macOS and Windows the copy is a key press.
-        self.assist_grab = selection.Grab(focus=self.front_before)
+        # A provider that is never sent selected text gets none read at all.
+        self.assist_grab = (selection.Grab(focus=self.front_before)
+                            if assistant.can_run_tool_free(self.conf)
+                            else selection.NoGrab())
         self.ask_overlay.show_recording(asking=True)
         self._begin_recording(ASK)
         if not self.recorder.active:
@@ -1328,13 +1328,10 @@ class Dikte:
 
     def _show_answer(self, payload, agent):
         old = getattr(self, "answer_window", None)
-        retired = [window for window in getattr(self, "_retired_answers", [])
-                   if window.busy]
         if old is not None:
+            # Closed, not deleted: it has no parent, and an Apply or Copy still
+            # running holds it in its own closure until it has reported.
             old.close()
-            if old.busy:
-                retired.append(old)
-        self._retired_answers = retired
         focus = payload.get("focus")
         selected = payload.get("selection") or ""
         # Apply is for an edit of something that was selected, on a desktop

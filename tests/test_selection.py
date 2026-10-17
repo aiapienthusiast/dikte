@@ -197,6 +197,16 @@ class Capture(DikteTest):
         names = self.names()
         self.assertLess(names.index("let_go"), names.index("press"))
 
+    def test_a_cancel_during_the_modifier_wait_presses_nothing(self):
+        cancelled = threading.Event()
+        self.calls.let_go.side_effect = cancelled.set
+        with mock.patch.object(paste, "desktop", return_value=paste.WINDOWS), \
+                contextlib.redirect_stderr(io.StringIO()):
+            got = selection.capture(None, cancelled)
+        self.assertEqual(got, selection.NOTHING)
+        self.calls.press.assert_not_called()
+        self.calls.copy_bytes.assert_called_once_with(b"what was there")
+
     def test_macos_needs_no_modifier_release(self):
         """CGEventSetFlags sets the modifiers outright there."""
         self.capture(paste.MACOS)
@@ -239,6 +249,80 @@ class Capture(DikteTest):
             grab = selection.Grab()
             self.assertEqual(grab.result(timeout=0.05), selection.NOTHING)
             release.set()
+
+
+class LinuxClipboard(DikteTest):
+    """Empty, text, or something that must be left alone."""
+
+    def kind(self, desktop, result, tools=("wl-paste", "xclip")):
+        with mock.patch.object(selection.shutil, "which",
+                               side_effect=lambda tool: tool if tool in tools else None), \
+                mock.patch.object(selection.subprocess, "run", return_value=result) as run:
+            return selection._linux_clipboard_kind(desktop), run
+
+    def test_wayland_types(self):
+        cases = [
+            (completed(1, stderr=b"No selection\n"), "empty"),
+            (completed(1, stderr=b"Nothing is copied\n"), "empty"),
+            (completed(stdout=b"text/plain;charset=utf-8\nUTF8_STRING\n"), "text"),
+            (completed(stdout=b"image/png\n"), "other"),
+            (completed(1, stderr=b"Failed to connect"), "other"),
+        ]
+        for result, expected in cases:
+            with self.subTest(expected=expected, err=result.stderr):
+                kind, run = self.kind(paste.WAYLAND, result)
+                self.assertEqual(kind, expected)
+                self.assertEqual(run.call_args.args[0], selection.WAYLAND_TYPES)
+
+    def test_x11_targets(self):
+        kind, run = self.kind(paste.X11, completed(
+            1, stderr=b"Error: target TARGETS not available\n"))
+        self.assertEqual(kind, "empty")
+        self.assertEqual(run.call_args.args[0], selection.X11_TARGETS)
+        kind, _ = self.kind(paste.X11, completed(stdout=b"TARGETS\nimage/png\n"))
+        self.assertEqual(kind, "other")
+        kind, _ = self.kind(paste.X11, completed(stdout=b"TARGETS\nUTF8_STRING\n"))
+        self.assertEqual(kind, "text")
+
+    def test_no_tool_is_left_alone(self):
+        kind, run = self.kind(paste.WAYLAND, completed(), tools=())
+        self.assertEqual(kind, "other")
+        run.assert_not_called()
+
+    def snap(self, kind, clipboard=b"old"):
+        with mock.patch.object(paste, "desktop", return_value=paste.WAYLAND), \
+                mock.patch.object(selection, "_linux_clipboard_kind", return_value=kind), \
+                mock.patch.object(paste, "read_clipboard", return_value=clipboard) as read:
+            return selection.snapshot(), read
+
+    def test_an_empty_linux_clipboard_can_be_emptied_again(self):
+        saved, read = self.snap("empty", clipboard=None)
+        self.assertIs(saved, selection.EMPTY)
+        read.assert_not_called()
+
+    def test_a_text_linux_clipboard_is_read(self):
+        saved, _ = self.snap("text")
+        self.assertEqual(saved, b"old")
+
+    def test_an_image_on_the_linux_clipboard_is_never_read_as_text(self):
+        saved, read = self.snap("other")
+        self.assertIs(saved, selection.UNREADABLE)
+        read.assert_not_called()
+
+    def test_an_empty_clipboard_lets_the_copy_fallback_run(self):
+        calls = mock.Mock()
+        calls.read_text.return_value = "picked"
+        with mock.patch.object(paste, "desktop", return_value=paste.WAYLAND), \
+                mock.patch.object(paste, "paste_ready", return_value=True), \
+                mock.patch.object(selection, "read_primary", return_value=None), \
+                mock.patch.object(selection, "_linux_clipboard_kind", return_value="empty"), \
+                mock.patch.object(selection.time, "sleep"), \
+                mock.patch.multiple(paste, copy=calls.copy, press=calls.press,
+                                    read_text=calls.read_text,
+                                    copy_bytes=calls.copy_bytes):
+            got = selection.capture()
+        self.assertEqual(got.text, "picked")
+        self.assertEqual(calls.copy.call_args_list, [mock.call(""), mock.call("")])
 
 
 class Prompt(unittest.TestCase):
@@ -320,6 +404,14 @@ class Apply(DikteTest):
                                                  delay=selection.APPLY_DELAY, focus=9)
         self.calls.copy_bytes.assert_called_once_with(b"before")
 
+    def test_an_unreadable_clipboard_is_not_overwritten(self):
+        with mock.patch.object(selection, "snapshot", return_value=selection.UNREADABLE):
+            with self.assertRaises(paste.PasteError) as caught:
+                selection.apply("New text.", self.conf)
+        self.assertIn("Use Copy", str(caught.exception))
+        self.calls.copy.assert_not_called()
+        self.calls.press.assert_not_called()
+
     def test_a_failed_paste_leaves_the_text_to_paste_by_hand(self):
         self.calls.press.side_effect = paste.PasteError("no ydotool")
         with self.assertRaises(paste.PasteError):
@@ -397,15 +489,47 @@ class Window(DikteTest):
         """A dictation holding the lock must not freeze the window."""
         window, _ = self.make(can_apply=False)
         lock = worker._paste_lock
-        lock.acquire()
-        try:
-            with mock.patch.object(paste, "copy") as copy:
+        with mock.patch.object(paste, "copy") as copy:
+            lock.acquire()
+            try:
                 window.copy_button.click()   # returns although the lock is held
                 self.assertTrue(window.busy)
                 copy.assert_not_called()
-        finally:
-            lock.release()
-        window._copy_thread.join(2)
+            finally:
+                lock.release()
+            window._copy_thread.join(2)
+
+    def test_a_copy_that_raises_anything_brings_the_button_back(self):
+        window, _ = self.make(can_apply=False)
+        with mock.patch.object(paste, "copy", side_effect=ValueError("odd")):
+            window.copy_button.click()
+            window._copy_thread.join(2)
+        QApplication.processEvents()
+        self.assertEqual(window.copy_button.text(), "Copy failed")
+        self.assertIn("odd", window.copy_button.toolTip())
+
+    def test_a_second_click_while_copying_is_ignored(self):
+        window, _ = self.make(can_apply=False)
+        lock = worker._paste_lock
+        with mock.patch.object(paste, "copy") as copy:
+            lock.acquire()
+            try:
+                window.copy_button.click()
+                first = window._copy_thread
+                window.copy_button.click()
+                self.assertIs(window._copy_thread, first)
+            finally:
+                lock.release()
+            first.join(2)
+        copy.assert_called_once()
+
+    def test_a_failed_apply_brings_the_answer_back(self):
+        window, _ = self.make(apply_fn=mock.Mock(side_effect=paste.PasteError("no")))
+        window.show()
+        window.apply()
+        window._thread.join(2)
+        QApplication.processEvents()
+        self.assertTrue(window.isVisible())
 
     def test_the_selection_tooltip_keeps_its_line_breaks(self):
         window, _ = self.make(selected="line one\nline two")
@@ -612,18 +736,51 @@ class App(DikteTest):
         long = "x" * (selection.MAX_CHARS + 1)
         self.assertFalse(self.answer(selection.EDIT, selected=long).can_apply)
 
-    def test_a_replaced_window_is_kept_until_its_apply_finishes(self):
+    def test_a_provider_that_cannot_run_tool_free_reads_no_selection(self):
+        """Codex and Antigravity: no key press, clipboard untouched."""
+        for name in ("codex", "agy"):
+            with self.subTest(provider=name):
+                target = self.controller(True)
+                target.conf["assistant_provider"] = name
+                with mock.patch.object(selection, "Grab") as grab, \
+                        mock.patch.object(paste, "press") as press, \
+                        mock.patch.object(paste, "read_clipboard") as read:
+                    app.Dikte._toggle_assist(target)
+                grab.assert_not_called()
+                press.assert_not_called()
+                read.assert_not_called()
+                self.assertIsInstance(target.assist_grab, selection.NoGrab)
+                self.assertEqual(target.assist_grab.result(), selection.NOTHING)
+                self.assertEqual(target.ask_state, app.RECORDING)
+
+    def test_a_replaced_window_still_reports_its_apply(self):
+        """Closed and dropped by the app, its thread still holds it."""
+        release = threading.Event()
+
+        def slow(text):
+            release.wait(5)
+            raise paste.PasteError("late")
+
         target = self.controller(True)
-        old = mock.Mock(busy=True)
-        target.answer_window = old
-        target._retired_answers = [mock.Mock(busy=False)]
-        payload = {"instruction": "q", "text": "a", "kind": selection.ANSWER,
-                   "selection": "", "warning": "", "focus": None}
-        with mock.patch.object(app, "_present"):
+        target.ask_overlay = mock.Mock()
+        target._report = mock.Mock()
+        payload = {"instruction": "q", "text": "a", "kind": selection.EDIT,
+                   "selection": "s", "warning": "", "focus": None}
+        with mock.patch.object(app, "_present"), \
+                mock.patch.object(paste, "paste_ready", return_value=True), \
+                mock.patch.object(selection, "apply", side_effect=lambda *a, **k: slow(a[0])):
             app.Dikte._show_answer(target, payload, "Claude")
-        self.addCleanup(target.answer_window.deleteLater)
-        old.close.assert_called_once_with()
-        self.assertEqual(target._retired_answers, [old])
+            first = target.answer_window
+            first.apply()
+            app.Dikte._show_answer(target, payload, "Claude")
+            self.addCleanup(target.answer_window.deleteLater)
+            thread = first._thread
+            del first
+            release.set()
+            thread.join(2)
+        QApplication.processEvents()
+        target._report.assert_called_once()
+        self.assertIn("late", target._report.call_args.args[0])
 
     def test_a_discarded_question_cancels_its_copy(self):
         target = self.controller(True)
@@ -658,6 +815,42 @@ class ToolFree(DikteTest):
         self.assertIn("--no-session-persistence", cmd)
         self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "dontAsk")
         self.assertNotIn("bypassPermissions", cmd)
+
+    def test_the_prompt_goes_in_on_stdin_not_argv(self):
+        conf = self.config()
+        with mock.patch.object(assistant, "_stream", return_value=(0, "")) as stream, \
+                mock.patch.object(assistant, "_conclude", return_value=("ok", "")):
+            assistant._ask_claude("SECRET SELECTION", conf, "", None, None,
+                                  keep=False, tool_free=True)
+        self.assertNotIn("SECRET SELECTION", stream.call_args.args[0])
+        self.assertEqual(stream.call_args.args[0][:2], ["claude", "-p"])
+        self.assertEqual(stream.call_args.kwargs["stdin_text"], "SECRET SELECTION")
+
+    def test_stdin_is_written_and_closed(self):
+        conf = self.config()
+        proc = mock.Mock()
+        proc.stdout = iter(['{"type": "result", "result": "ok"}\n'])
+        proc.returncode = 0
+        proc.poll.return_value = 0
+        with mock.patch.object(subprocess, "Popen", return_value=proc) as popen, \
+                mock.patch.object(assistant, "_finish", return_value=""):
+            assistant._stream(["claude", "-p"], conf, lambda e: None, None,
+                              stdin_text="hello")
+        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
+        for _ in range(100):
+            if proc.stdin.close.called:
+                break
+            threading.Event().wait(0.01)
+        proc.stdin.write.assert_called_once_with("hello")
+        proc.stdin.close.assert_called_once_with()
+
+    def test_ordinary_agent_runs_keep_the_prompt_in_argv(self):
+        conf = self.config()
+        with mock.patch.object(assistant, "_stream", return_value=(0, "")) as stream, \
+                mock.patch.object(assistant, "_conclude", return_value=("ok", "")):
+            assistant._ask_claude("book it", conf, "", None, None)
+        self.assertEqual(stream.call_args.args[0][:3], ["claude", "-p", "book it"])
+        self.assertNotIn("stdin_text", stream.call_args.kwargs)
 
     def test_a_plain_claude_run_is_as_before(self):
         cmd = self.command(False, assistant_permission_mode="bypassPermissions")

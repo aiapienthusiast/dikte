@@ -48,6 +48,8 @@ class AnswerWindow(QDialog):
         self._thread = None
         self._copy_thread = None
         self.copy_done.connect(self._copied)
+        # Nothing was pasted, so the answer comes back to be copied instead.
+        self.apply_failed.connect(self._reopen)
         self.setWindowTitle(t("Dikte: {name}", name=agent) if agent else "Dikte")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.resize(520, 360)
@@ -104,14 +106,6 @@ class AnswerWindow(QDialog):
         return any(thread is not None and thread.is_alive()
                    for thread in (self._thread, self._copy_thread))
 
-    def _emit(self, signal, message):
-        # A window replaced by a newer answer may be gone by the time its
-        # thread finishes; there is then nobody left to tell.
-        try:
-            signal.emit(message)
-        except RuntimeError:
-            pass
-
     def text(self):
         return self.answer.toPlainText()
 
@@ -126,10 +120,9 @@ class AnswerWindow(QDialog):
             try:
                 self._apply_fn(text)
             except paste.PasteError as exc:
-                self._emit(self.apply_failed, str(exc))
-            except Exception as exc:  # the window is gone; say it somewhere
-                self._emit(self.apply_failed,
-                           t("Unexpected error: {error}", error=exc))
+                self.apply_failed.emit(str(exc))
+            except Exception as exc:  # the window is hidden; say it somewhere
+                self.apply_failed.emit(t("Unexpected error: {error}", error=exc))
 
         self._thread = threading.Thread(target=work, daemon=True)
         self._thread.start()
@@ -142,19 +135,25 @@ class AnswerWindow(QDialog):
         moment cannot put the old contents back over the answer, and waiting
         for that lock must not freeze the window.
         """
+        if self._copy_thread is not None and self._copy_thread.is_alive():
+            return
         text = self.text()
 
         def work():
             try:
                 with selection._paste_lock():
                     paste.copy(text)
-            except paste.PasteError as exc:
-                self._emit(self.copy_done, str(exc) or "error")
+            except Exception as exc:  # the button must always come back
+                self.copy_done.emit(str(exc) or t("Copy failed"))
                 return
-            self._emit(self.copy_done, "")
+            self.copy_done.emit("")
 
         self._copy_thread = threading.Thread(target=work, daemon=True)
         self._copy_thread.start()
+
+    def _reopen(self, _message):
+        self.show()
+        self.raise_()
 
     def _copied(self, error):
         if error:

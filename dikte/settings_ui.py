@@ -2049,8 +2049,11 @@ class SettingsWindow(QDialog):
             "directly; on macOS and Windows Dikte presses the copy shortcut and "
             "puts your clipboard back afterwards. The selection goes to the "
             "agent as data, with no tools; Codex and Antigravity are not sent "
-            "it. The history keeps your instruction and the reply, which for "
-            "an edit is the rewritten text."))
+            "it, and the key asks them a plain question. The history keeps "
+            "your instruction and the reply, which for an edit is the "
+            "rewritten text. On Linux the last highlighted text can be sent "
+            "even after the highlight is gone. On Windows a clipboard holding "
+            "only an image or files means no selection is read."))
         selected_form.addRow("", self.selection_assist)
         self._shortcut_row(
             selected_form, "assist", t("Shortcut"),

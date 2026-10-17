@@ -1187,16 +1187,25 @@ TR = {
     "you press Apply. On Linux the selection is read directly; on macOS and "
     "Windows Dikte presses the copy shortcut and puts your clipboard back "
     "afterwards. The selection goes to the agent as data, with no tools; "
-    "Codex and Antigravity are not sent it. The history keeps your "
-    "instruction and the reply, which for an edit is the rewritten text.":
+    "Codex and Antigravity are not sent it, and the key asks them a plain "
+    "question. The history keeps your instruction and the reply, which for "
+    "an edit is the rewritten text. On Linux the last highlighted text can be "
+    "sent even after the highlight is gone. On Windows a clipboard holding "
+    "only an image or files means no selection is read.":
         "Metni seç, kısayola bas ve onunla ne yapılacağını söyle. Cevap, "
         "kopyalama düğmesi ve düzenlemeler için Uygula düğmesi olan bir "
         "pencerede açılır; Uygula'ya basmadan hiçbir şey yapıştırılmaz. "
         "Linux'ta seçim doğrudan okunur; macOS ve Windows'ta Dikte kopyalama "
         "kısayoluna basar ve panonu sonra eski haline getirir. Seçim ajana "
-        "veri olarak, araçsız gönderilir; Codex ve Antigravity'ye gönderilmez. "
-        "Geçmişte talimatın ve cevap saklanır; düzenlemelerde bu, yeniden "
-        "yazılmış metindir.",
+        "veri olarak, araçsız gönderilir; Codex ve Antigravity'ye gönderilmez, "
+        "kısayol onlara düz bir soru sorar. Geçmişte talimatın ve cevap "
+        "saklanır; düzenlemelerde bu, yeniden yazılmış metindir. Linux'ta en "
+        "son vurgulanan metin, vurgu kalktıktan sonra da gönderilebilir. "
+        "Windows'ta panoda yalnızca bir resim ya da dosya varsa seçim okunmaz.",
+    "The clipboard holds something that cannot be put back, so nothing was "
+    "pasted. Use Copy instead.":
+        "Panoda geri konamayacak bir şey var, bu yüzden hiçbir şey "
+        "yapıştırılmadı. Bunun yerine kopyalamayı kullan.",
     "{name} cannot run without tools, so selected text is not sent to it. "
     "Use Claude Code or a chat provider.":
         "{name} araçsız çalıştırılamadığı için seçili metin ona gönderilmez. "
