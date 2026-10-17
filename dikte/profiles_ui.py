@@ -10,6 +10,7 @@ anything having been edited.
 """
 
 import copy
+import itertools
 import threading
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -48,6 +49,9 @@ class _Relay(QObject):
 
 
 _RELAY = []
+# Every question asked, numbered across all editors: an address can be reused
+# by a new editor, a number from this never is.
+_QUESTIONS = itertools.count(1)
 
 
 def _relay():
@@ -259,7 +263,7 @@ class DictionaryEditor(QWidget):
             return True
         # Only a change of word can collide: two equal terms migrated from the
         # old text stay editable, each one on its own.
-        renamed = dictionary._key(record["term"]) != dictionary._key(old["term"])
+        renamed = dictionary.fold(record["term"]) != dictionary.fold(old["term"])
         if renamed and self._index(record["term"], skip=index) is not None:
             return False
         record["breaks"] = old.get("breaks", 0)
@@ -301,9 +305,9 @@ class DictionaryEditor(QWidget):
     def _index(self, term, skip=None):
         """The first other record with this term, folded the way the
         dictionary folds it (Turkish's dotted I included)."""
-        key = dictionary._key(term)
+        key = dictionary.fold(term)
         for i, record in enumerate(self._entries):
-            if i != skip and dictionary._key(record["term"]) == key:
+            if i != skip and dictionary.fold(record["term"]) == key:
                 return i
         return None
 
@@ -734,8 +738,8 @@ class ProfilesEditor(QWidget):
     def _show_found(self):
         """Ask on a thread of its own: the asking is up to three subprocesses,
         and this is the main thread. The answer comes back through a signal."""
-        self._asked += 1
-        asked, relay = (id(self), self._asked), _relay()
+        self._asked = next(_QUESTIONS)
+        asked, relay = self._asked, _relay()
 
         def work():
             relay.found.emit(asked, frontapp.program_name())
@@ -745,7 +749,7 @@ class ProfilesEditor(QWidget):
     def _found(self, asked, name):
         # Only this editor's newest question: a slow earlier one must not land
         # on top of it, and another editor's is not this one's to show.
-        if asked != (id(self), self._asked):
+        if asked != self._asked:
             return
         self.found.setText(t("In front: {name}", name=name) if name
                            else t("The program in front could not be found out."))

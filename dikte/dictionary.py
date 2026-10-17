@@ -48,11 +48,13 @@ LEARN_AFTER = 3
 PENDING_LIMIT = 200
 # Learned words the user deleted, which are not learned again.
 REJECTED_LIMIT = 500
-# How much of the dictionary the transcription model is told, in characters.
-# Whisper reads at most 224 tokens of prompt and keeps the end of a longer one;
-# 600 characters stays inside that even for text that tokenises badly. The
-# typed entries go first, so learning can never push them out. The cleanup
-# glossary has no such limit and carries everything.
+# How much room the learned entries may take in the transcription hint, in
+# characters. Whisper reads at most 224 tokens of prompt and keeps the end of
+# a longer one; 600 characters stays inside that even for text that tokenises
+# badly. Typed entries are never trimmed: they go in whole as they always did,
+# so a typed list longer than about 600 characters can still pass the limit,
+# and then the provider keeps its end. Learned entries only fill what room is
+# left. The cleanup glossary has no such limit and carries everything.
 HINT_BUDGET = 600
 
 _LOCK = threading.Lock()
@@ -141,10 +143,14 @@ def budget_hint(records, budget=HINT_BUDGET, reserve=0):
     return _render(kept, hint_of)
 
 
-def _key(text):
+def fold(text):
     """Without regard to case, and with Turkish's dotted capital I folded to a
-    plain i rather than to an i and a combining dot."""
+    plain i rather than to an i and a combining dot. How the dictionary tells
+    two terms are the same one."""
     return text.casefold().replace("i̇", "i")
+
+
+_key = fold
 
 
 def merge(edited, extra):
@@ -380,9 +386,9 @@ def forget_pending(texts=None):
         if texts is None:
             pending = {}
         else:
-            haystack = _key("\n".join(t for t in texts if isinstance(t, str)))
+            rows = [_tokens(t) for t in texts if isinstance(t, str)]
             pending = {term: value for term, value in stored["pending"].items()
-                       if _key(term) not in haystack}
+                       if not any(_occurs(_tokens(term), row) for row in rows)}
             if len(pending) == len(stored["pending"]):
                 return
         _write(stored["entries"], pending, stored["synced"], stored["rejected"],
@@ -475,6 +481,19 @@ def runs(text):
             close()
     close()
     return found
+
+
+def _tokens(text):
+    """A text as the words learning reads, folded: what a term is matched on,
+    whatever the spacing between its words."""
+    return [_key(w) for w in _WORD.findall(text)]
+
+
+def _occurs(term, words):
+    """Whether the word sequence `term` stands whole somewhere in `words`."""
+    size = len(term)
+    return bool(size) and any(words[i:i + size] == term
+                              for i in range(len(words) - size + 1))
 
 
 def candidates(text):

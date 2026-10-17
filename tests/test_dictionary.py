@@ -194,6 +194,16 @@ class Learning(DikteTest):
         self.assertEqual(dictionary.candidates("Notes\nCall the doctor\n- Fix it"), [])
         self.assertEqual(dictionary.candidates("Notes:\nask Grafana"), ["Grafana"])
 
+    def test_a_deleted_row_forgets_whole_words_only(self):
+        conf = self.config()
+        dictionary._write([], {"Ali": [1, 1], "Claude Code": [1, 1], "Grafana": [1, 1]}, "")
+        cfg.delete_history([{"raw": "kalibrasyon Alican ile", "text": "I asked Claude  Code\tnow."}])
+        stored = json.loads(dictionary.path().read_text(encoding="utf-8"))
+        self.assertEqual(sorted(stored["pending"]), ["Ali", "Grafana"])
+
+    def test_fold_is_public_and_folds_turkish_capitals(self):
+        self.assertEqual(dictionary.fold("İstanbul"), dictionary.fold("istanbul"))
+
     def test_a_line_break_ends_a_name(self):
         self.assertEqual(dictionary.candidates("I talked to Ahmet\nand Mehmet is here"),
                          ["Ahmet", "Mehmet"])

@@ -451,10 +451,10 @@ class Pipeline(QObject):
         return profile.result() if hasattr(profile, "result") else profile
 
     def _give_up(self, wav_path, message, duration, model, retry, profile=None):
-        profile = self._resolved(profile)
         """Keep the audio and record the dictation as failed, so the history
         shows it with a way to try again. A retry that failed once more updates
         its own row instead of adding another."""
+        profile = self._resolved(profile)
         message, kept = self._keeping(wav_path, message)
         if not kept:
             return message

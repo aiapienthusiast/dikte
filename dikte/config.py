@@ -1137,8 +1137,8 @@ def delete_history(rows):
         kept = [json.dumps(row, ensure_ascii=False) + "\n"
                 for row in _read_history() if _row_key(row) not in doomed]
         _write_history(kept)
-    # Only the names those rows held: the rest came from dictations still
-    # in the history.
+    # Only the names those rows held. Others may have come from rows already
+    # trimmed away; those are not tracked, and age out with the count.
     _forget_learning([row.get(field) for row in rows for field in ("raw", "text")])
 
 

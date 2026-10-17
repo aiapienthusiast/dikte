@@ -168,7 +168,9 @@ class _ProfileLookup:
                 self._thread = None
                 try:
                     fallback = profiles.choose(self._conf, "", True)
-                except Exception:
+                except Exception as exc:  # a profile is never worth a dictation
+                    print(f"dikte: could not choose a profile: {exc}",
+                          file=sys.stderr)
                     fallback = None
                 with self._lock:
                     # Still asking: the Default profile, said so in the history

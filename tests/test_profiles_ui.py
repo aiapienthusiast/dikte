@@ -224,12 +224,19 @@ class Profiles(DikteTest):
 
     def test_a_late_answer_to_an_older_question_is_dropped(self):
         editor = self.editor(self.config())
-        editor._asked = 2
-        editor._found((id(editor), 1), "firefox")
+        with mock.patch.object(profiles_ui.threading, "Thread"):
+            editor._show_found()
+            first = editor._asked
+            editor._show_found()
+        self.assertNotEqual(first, editor._asked)
+        editor._found(first, "firefox")
         self.assertEqual(editor.found.text(), "")
-        editor._found((id(editor) + 1, 2), "firefox")
-        self.assertEqual(editor.found.text(), "")
-        editor._found((id(editor), 2), "slack")
+        other = self.editor(self.config())
+        with mock.patch.object(profiles_ui.threading, "Thread"):
+            other._show_found()
+        # Numbers are never shared, whichever editor asked.
+        self.assertNotEqual(other._asked, editor._asked)
+        editor._found(editor._asked, "slack")
         self.assertEqual(editor.found.text(), "In front: slack")
 
     def test_the_answer_goes_through_a_relay_that_outlives_the_editor(self):
