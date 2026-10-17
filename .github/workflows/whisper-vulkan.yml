@@ -53,8 +53,12 @@ on:
 permissions:
   contents: read
 
+# One queue per pull request, and per ref and platform choice for a dispatch,
+# so a Linux publish never waits behind a running Windows build or gets
+# replaced by a later Windows dispatch. A dispatch is never cancelled; a
+# second publish of the same tag fails on the existing tag instead.
 concurrency:
-  group: whisper-vulkan-${{ github.event.pull_request.number || github.ref }}
+  group: whisper-vulkan-${{ github.event.pull_request.number || github.ref }}-${{ inputs.platforms || 'pr' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -410,7 +414,7 @@ jobs:
             Verify with: gh attestation verify
             whisper-bin-ubuntu-vulkan-x64.tar.gz
             --repo ${{ github.repository }}
-        run: |
+        run: &publish-release |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "refusing to replace existing release $RELEASE_TAG" >&2
@@ -479,25 +483,6 @@ jobs:
             Verify with: gh attestation verify
             whisper-bin-win-vulkan-x64.zip
             --repo ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "refusing to replace existing release $RELEASE_TAG" >&2
-            exit 1
-          fi
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "refusing to replace existing tag $RELEASE_TAG" >&2
-            exit 1
-          fi
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/$RELEASE_TAG" \
-            -f sha="$GITHUB_SHA" >/dev/null
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
-            --jq .object.sha)" = "$GITHUB_SHA"
-          gh release create "$RELEASE_TAG" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --prerelease \
-            --latest=false \
-            --title "$RELEASE_TITLE" \
-            --notes "$RELEASE_NOTES"
+        # The Linux job's script, by YAML alias, so the tag and release checks
+        # cannot drift apart between the two.
+        run: *publish-release

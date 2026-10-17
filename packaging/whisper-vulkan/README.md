@@ -18,23 +18,17 @@ to upstream's CPU archive, and the settings window says when it did.
 1. Enable GitHub's immutable releases setting for the repository, and give the
    `dependency-release` environment a required reviewer. Both are repository
    settings, not something this workflow can do for itself.
-2. Run **whisper.cpp Vulkan bundle** on `master` with the new version and its
-   peeled commit, `platforms` set to `linux`, `windows` or `both`, the
-   expected digests empty and `publish: false`. The run builds what was asked
-   for and reports the digests; without a reviewed digest it refuses to
-   publish, which is what the first run is for.
-3. Review each digest against a build of your own, then run the workflow
-   again with the same version, commit and platforms, `expected_sha256` and/or
-   `expected_windows_sha256` set, and `publish: true`. Each platform needs only
-   its own digest. Approve the environment when it asks.
-4. Write the same version, tag and digest into `MANAGED_WHISPER_RELEASE`,
-   `MANAGED_WHISPER_VERSION` and `MANAGED_WHISPER_SHA256` in `dikte/ggml.py`,
-   and into `REVIEWED_WHISPER_VERSION` and `REVIEWED_WHISPER_SHA256` in the
-   workflow; the Windows ones go into the `MANAGED_WHISPER_WINDOWS_*` and
-   `REVIEWED_WHISPER_WINDOWS_*` names beside them. Until the Windows digest is
-   filled in, it is a placeholder and every Windows machine gets upstream's
-   build, which is also why README.windows.md still says there is no GPU
-   build to fetch. `tests/test_packaging.py` holds the two sides together.
+2. Run **whisper.cpp Vulkan bundle** on `master` with the new version, its
+   peeled commit, `platforms`, empty expected digests and `publish: false`.
+   The run reports each digest and refuses to publish an unreviewed one.
+3. Review each digest against a build of your own, then run again with it in
+   `expected_sha256` or `expected_windows_sha256` and `publish: true`. With
+   `both`, each platform publishes or fails on its own.
+4. Write the version and digest into `MANAGED_WHISPER_VERSION` and
+   `MANAGED_WHISPER_SHA256` (or their `_WINDOWS_` twins) in `dikte/ggml.py`
+   and `REVIEWED_WHISPER_*` in the workflow. Both derive the tag, with a
+   `-windows` suffix for Windows. `tests/test_packaging.py` holds them
+   together.
 5. Ship a Dikte release. Until one goes out, nobody's Dikte knows the new
    bundle exists.
 

@@ -26,6 +26,40 @@ PACKAGING = ROOT / "packaging" / "whisper-vulkan"
 WORKFLOW = ROOT / ".github" / "workflows" / "whisper-vulkan.yml"
 
 
+def step_script(workflow, name):
+    """The `run:` script of the workflow step called `name`.
+
+    Read by indentation, without a YAML library, which the tests do not
+    depend on. A `*alias` script is followed to the `&anchor` it names.
+    """
+    lines = workflow.splitlines()
+    start = lines.index(f"      - name: {name}")
+    run = None
+    for line in lines[start + 1:]:
+        if line.startswith("      - ") or (line.strip() and not line.startswith("        ")):
+            break
+        if line.startswith("        run: "):
+            run = line[len("        run: "):]
+            break
+    if run is None:
+        raise AssertionError(f"step {name!r} has no run script")
+    if run.startswith("*"):
+        anchor = f"run: &{run[1:]} |"
+        start = next(index for index, line in enumerate(lines)
+                     if line.strip() == anchor)
+    elif run.endswith("|"):
+        start = lines.index(next(line for line in lines[start:]
+                                 if line.startswith("        run: ")))
+    else:
+        return run
+    body = []
+    for line in lines[start + 1:]:
+        if line.strip() and not line.startswith("          "):
+            break
+        body.append(line[10:])
+    return "\n".join(body).strip("\n")
+
+
 class WhisperVulkanPackaging(unittest.TestCase):
     @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"),
                          "bash syntax check is unavailable")
@@ -62,9 +96,8 @@ class WhisperVulkanPackaging(unittest.TestCase):
         self.assertIn("refusing to replace existing tag", workflow)
         self.assertIn("^[0-9]+\\.[0-9]+\\.[0-9]+$", workflow)
         self.assertIn("^[0-9a-f]{40}$", workflow)
-        publish_script = workflow.split("      - name: Publish dependency release", 1)[1]
-        publish_script = publish_script.split("        run: |", 1)[1]
-        publish_script = publish_script.split("\n\n", 1)[0]
+        publish_script = step_script(workflow, "Publish dependency release")
+        self.assertIn("gh release create", publish_script)
         self.assertNotIn("${{ inputs.", publish_script)
 
     def test_bundle_ci_runs_only_for_what_the_bundle_is_built_from(self):
@@ -547,10 +580,12 @@ class WindowsVulkanPackaging(unittest.TestCase):
         self.assertIn(
             "RELEASE_TAG: whisper.cpp-v${{ inputs.whisper_version }}-windows",
             windows_publish)
+        script = step_script(workflow, "Publish Windows dependency release")
+        self.assertEqual(step_script(workflow, "Publish dependency release"),
+                         script)
         for check in ("--prerelease", "--latest=false", "--verify-tag",
                       "refusing to replace existing tag"):
-            self.assertIn(check, windows_publish)
-        script = windows_publish.split("        run: |", 1)[1]
+            self.assertIn(check, script)
         self.assertNotIn("${{ inputs.", script)
 
     def test_each_platform_is_built_and_published_on_its_own(self):
@@ -566,6 +601,8 @@ class WindowsVulkanPackaging(unittest.TestCase):
         self.assertIn("inputs.platforms != 'linux'", windows)
         for job in (linux, windows):
             self.assertIn("github.event_name == 'pull_request'", job)
+        group = re.search(r"\nconcurrency:\n  group: (.*)\n", workflow).group(1)
+        self.assertIn("inputs.platforms", group)
         self.assertIn(ggml.MANAGED_WHISPER_WINDOWS_VULKAN,
                       windows_bundle.ASSET + ".zip")
 
