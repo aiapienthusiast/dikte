@@ -248,7 +248,7 @@ class Readers(DikteTest):
 class TitleNeverStored(ChainBase):
     def test_the_history_keeps_the_site_and_not_the_title(self):
         self.conf["profiles"] = [{"name": "Chat", "sites": ["WhatsApp"]}]
-        title = f"(4) WhatsApp {EM} Private chat with Ayşe {EM} Mozilla Firefox"
+        title = f"(4) WhatsApp: Private chat with Ayşe {EM} Mozilla Firefox"
         choice = profiles.choose(self.conf, "firefox", True, title)
         self.run_chain(profile=choice)
         stored = cfg.HISTORY_FILE.read_text(encoding="utf-8")
@@ -383,3 +383,87 @@ class CountdownEdges(DikteTest):
         editor._titled(9, "firefox", "Mozilla Firefox")
         self.assertIn("Open the site's tab first", editor.site_status.text())
         self.assertEqual(editor.current()["sites"], [])
+
+
+class EdgeAndFirstParts(DikteTest):
+    def test_edge_without_a_profile_keeps_the_site(self):
+        self.assertEqual(profiles.propose_site(
+            "Knowledge base - Confluence - Microsoft\u200b Edge"), "Confluence")
+
+    def test_edge_with_a_profile_drops_it(self):
+        for profile in ("Personal", "Work", "Profile 2", "İş", "Kişisel", "you@example.com"):
+            with self.subTest(profile=profile):
+                self.assertEqual(profiles.propose_site(
+                    f"Video - YouTube - {profile} - Microsoft Edge"), "YouTube")
+
+    def test_edge_beta_and_more_pages(self):
+        self.assertEqual(profiles.propose_site(
+            "Inbox - Outlook and 3 more pages - Work - Microsoft Edge Beta"), "Outlook")
+        conf = self.config(profiles=[{"name": "Wiki", "sites": ["Confluence"]}])
+        self.assertEqual(profiles.choose(
+            conf, "msedge", True, "Knowledge base - Confluence - Team - Microsoft Edge").name,
+            "Wiki")
+
+    def test_a_title_of_browser_like_words_keeps_its_last_part(self):
+        self.assertEqual(profiles.title_parts("Google - Google Chrome"), ["Google"])
+        self.assertEqual(profiles.propose_site("Google Chrome"), "")
+
+    def test_the_first_part_counts_only_after_a_generic_last_part(self):
+        conf = self.config(profiles=[{"name": "Chat", "sites": ["Slack"]},
+                                     {"name": "Mail", "sites": ["Gmail"]}])
+        for title in ("slack - Google Search - Google Chrome",
+                      f"Leaving Gmail - Medium {EM} Mozilla Firefox"):
+            with self.subTest(title=title):
+                self.assertEqual(profiles.choose(conf, "firefox", True, title).name, "")
+        self.assertEqual(profiles.choose(conf, "opera", True,
+                                         "Gmail - Inbox (3) - Opera").name, "Mail")
+
+    def test_the_help_text_says_page_text_does_not_match(self):
+        with mock.patch.object(frontapp, "backend", return_value=frontapp._x11):
+            self.assertIn("not the text of the page", profiles_ui.ProfilesEditor.sites_text())
+
+
+class Selection(DikteTest):
+    def backend(self, **env):
+        import os
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch.dict(os.environ, env, clear=True):
+            return frontapp.backend()
+
+    def test_a_leftover_socket_does_not_misroute_another_desktop(self):
+        self.assertIs(self.backend(WAYLAND_DISPLAY="w", XDG_CURRENT_DESKTOP="KDE",
+                                   SWAYSOCK="/tmp/sway.sock"), frontapp._kde_wayland)
+        self.assertIs(self.backend(WAYLAND_DISPLAY="w", XDG_CURRENT_DESKTOP="GNOME",
+                                   HYPRLAND_INSTANCE_SIGNATURE="x"), frontapp._gnome)
+        self.assertIs(self.backend(WAYLAND_DISPLAY="w", SWAYSOCK="/tmp/sway.sock"),
+                      frontapp._sway)
+
+    def test_compositor_variables_come_before_the_display_fallback(self):
+        self.assertIs(self.backend(DISPLAY=":0", NIRI_SOCKET="/tmp/niri"), frontapp._niri)
+
+    def test_only_gnome_itself_is_gnome(self):
+        self.assertIs(self.backend(WAYLAND_DISPLAY="w", XDG_CURRENT_DESKTOP="Budgie:GNOME"),
+                      frontapp._unknown)
+        for desktop in ("Budgie:GNOME", "X-Cinnamon", "MATE", "Unity"):
+            with self.subTest(desktop=desktop):
+                self.assertIs(self.backend(XDG_SESSION_TYPE="x11",
+                                           XDG_CURRENT_DESKTOP=desktop), frontapp._x11)
+
+
+class ProbeOnce(DikteTest):
+    def test_the_gnome_probe_runs_once_a_session(self):
+        with mock.patch.object(frontapp, "backend", return_value=frontapp._gnome), \
+                mock.patch.dict(frontapp.gnome_extension, {"present": None}), \
+                mock.patch.dict(profiles_ui._PROBE, {"started": False}), \
+                mock.patch.object(profiles_ui.threading, "Thread") as thread:
+            for _ in range(2):
+                editor = profiles_ui.ProfilesEditor()
+                self.addCleanup(editor.deleteLater)
+        self.assertEqual(thread.call_count, 1)
+
+    def test_a_deleted_editor_ignores_a_late_probe(self):
+        editor = profiles_ui.ProfilesEditor()
+        editor.deleteLater()
+        QApplication.processEvents()
+        profiles_ui._relay().probed.emit(False)
+        QApplication.processEvents()

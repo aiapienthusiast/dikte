@@ -54,6 +54,8 @@ class _Relay(QObject):
 
 
 _RELAY = []
+# Whether the GNOME extension has been asked about in this session.
+_PROBE = {"started": False}
 # Every question asked, numbered across all editors: an address can be reused
 # by a new editor, a number from this never is.
 _QUESTIONS = itertools.count(1)
@@ -551,12 +553,15 @@ class ProfilesEditor(QWidget):
         self._find_timer.timeout.connect(self._show_found)
         _relay().found.connect(self._found)
         _relay().titled.connect(self._titled)
-        _relay().probed.connect(lambda _present: self.detection.setText(
-            self.detection_text()))
+        _relay().probed.connect(self._probed)
         if (frontapp.backend() is frontapp._gnome
-                and frontapp.gnome_extension["present"] is None):
-            # Asked once, off this thread, so the note can say whether the
-            # extension is there rather than guess from a folder name.
+                and frontapp.gnome_extension["present"] is None
+                and not _PROBE["started"]):
+            # Asked once a session, off this thread, so the note can say
+            # whether the extension is there rather than guess from a folder
+            # name. An answer that never comes is not asked for again by
+            # every editor that opens after it.
+            _PROBE["started"] = True
             relay = _relay()
             threading.Thread(target=lambda: relay.probed.emit(frontapp.probe_gnome()),
                              daemon=True).start()
@@ -625,9 +630,11 @@ class ProfilesEditor(QWidget):
                      "program's window title needs a permission Dikte does not "
                      "ask for. Programs still match.")
         return t("When a dictation starts in a browser, its window title is read "
-                 "once to match these sites. Titles are never saved: the history "
-                 "keeps only the site that matched. A site wins over a program, "
-                 "so a browser listed above is used for every other site.")
+                 "once to match these sites. A site matches the site's name in "
+                 "the title, not the text of the page. Titles are never saved: "
+                 "the history keeps only the site that matched. A site wins over "
+                 "a program, so a browser listed above is used for every other "
+                 "site.")
 
     # ---- sites ------------------------------------------------------------
 
@@ -957,6 +964,12 @@ class ProfilesEditor(QWidget):
             relay.found.emit(asked, frontapp.program_name())
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _probed(self, _present):
+        try:
+            self.detection.setText(self.detection_text())
+        except RuntimeError:
+            pass  # an editor already deleted on the C++ side
 
     def _found(self, asked, name):
         # Only this editor's newest question: a slow earlier one must not land

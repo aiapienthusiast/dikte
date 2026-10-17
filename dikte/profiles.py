@@ -303,26 +303,45 @@ def _browser_part(part):
     return bool(words) and all(w in _BROWSER_WORDS for w in words)
 
 
-def title_parts(title):
-    """The parts of a tab title that belong to the page: without the
-    browser's own name, without an Edge profile's name before it, and without
-    unread counters. Empty for a blank tab or a title that is only the
-    browser."""
+_EDGE = frozenset(("microsoftedge", "microsoftedgebeta", "microsoftedgedev",
+                   "microsoftedgecanary"))
+# What an Edge profile is called, in the part Edge puts before its own name.
+_EDGE_PROFILE = re.compile(
+    r"^(?:personal|work|school|guest|default|kişisel|iş|okul|misafir|varsayılan"
+    r"|(?:profile|profil) \d+)$")
+# Edge folds a window of tabs into "Page and 3 more pages".
+_MORE_PAGES = re.compile(r"\s+(?:and \d+ more pages?|ve \d+ sayfa daha)$", re.IGNORECASE)
+
+
+def _edge_profile(part):
+    return "@" in part or _EDGE_PROFILE.match(fold(part).strip()) is not None
+
+
+def _parse_title(title):
+    """(parts, edge): the parts of a tab title that belong to the page, and
+    whether Edge wrote it. The browser's own name goes, but never the only
+    part left ("Google - Google Chrome" keeps Google); a title that is
+    nothing but the browser's name is no page at all. Counters go, an Edge
+    profile's name goes, and so does Edge's "and 3 more pages"."""
     # Edge writes its name with a zero-width space in it.
     title = (title or "").replace("\u200b", "")
     parts = [p.strip() for p in _TITLE_PARTS.split(title) if p.strip()]
-    edge = bool(parts) and fold(parts[-1]).replace(" ", "") == "microsoftedge"
-    count = len(parts)
-    while parts and _browser_part(parts[-1]):
+    if len(parts) == 1 and _browser_part(parts[0]):
+        return [], False
+    edge = bool(parts) and fold(parts[-1]).replace(" ", "") in _EDGE
+    while len(parts) > 1 and _browser_part(parts[-1]):
         parts.pop()
-    if edge and count >= 3 and len(parts) >= 2:
-        # "Page - Work - Microsoft Edge": the part before Edge is the profile.
+    if edge and len(parts) > 1 and _edge_profile(parts[-1]):
         parts.pop()
-    parts = [" ".join(_COUNTER.sub(" ", p).split()) for p in parts]
+    parts = [" ".join(_MORE_PAGES.sub("", _COUNTER.sub(" ", p)).split()) for p in parts]
     parts = [p for p in parts if p]
     if len(parts) == 1 and fold(parts[0]) in _BLANK:
-        return []
-    return parts
+        return [], edge
+    return parts, edge
+
+
+def title_parts(title):
+    return _parse_title(title)[0]
 
 
 def _site_part(parts):
@@ -337,14 +356,19 @@ def _site_part(parts):
 
 def site_segments(title):
     """The parts of a title a site keyword is looked for in, best first: the
-    site part, then the last part, then a short first part (a site-first
-    title). Never the whole title."""
-    parts = title_parts(title)
+    site part, then the last part. The first part only when the last says
+    nothing but where in a site one is (a site-first title, "Gmail - Inbox"),
+    and on Edge the part before the last as well, which may be a profile's
+    name or the site. Never the whole title, nor the parts in between: a site
+    matches the site's name in the title, not the page's text."""
+    parts, edge = _parse_title(title)
     if not parts:
         return []
     out = [_site_part(parts), parts[-1]]
-    if len(parts[0].split()) <= 3:
+    if len(parts) > 1 and fold(parts[-1]) in _GENERIC:
         out.append(parts[0])
+    if edge and len(parts) > 1:
+        out.append(parts[-2])
     return list(dict.fromkeys(out))
 
 
@@ -357,12 +381,11 @@ def propose_site(title):
     if not parts:
         return ""
     site = _site_part(parts)
-    if _DOMAIN.match(site) and "." in site:
+    if _DOMAIN.match(site):
         labels = site.lower().split(".")
         if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
             return labels[-3]
-        if len(labels) >= 2:
-            return labels[-2]
+        return labels[-2]
     words = site.split()
     if len(words) > 3:
         site = words[-1]

@@ -441,8 +441,20 @@ def probe_gnome():
     return gnome_extension["present"]
 
 
-def _desktop():
-    return os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+def _desktops():
+    """XDG_CURRENT_DESKTOP's entries, lower case, most specific first
+    ("Budgie:GNOME" is Budgie)."""
+    value = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    return [entry for entry in value.split(":") if entry]
+
+
+# The compositors that announce themselves with a socket variable. One left
+# over in the environment of another session (a terminal started under sway,
+# then a KDE login) must not send that session to the wrong compositor, so
+# the variable counts only when XDG_CURRENT_DESKTOP agrees or says nothing.
+_COMPOSITORS = (("HYPRLAND_INSTANCE_SIGNATURE", "hyprland", "_hyprland"),
+                ("SWAYSOCK", "sway", "_sway"),
+                ("NIRI_SOCKET", "niri", "_niri"))
 
 
 def backend():
@@ -452,19 +464,19 @@ def backend():
         return _macos
     if sys.platform == "win32":
         return _windows
-    if os.environ.get("XDG_SESSION_TYPE") == "x11" or (
-            os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")):
+    if os.environ.get("XDG_SESSION_TYPE") == "x11":
         return _x11
-    desktop = _desktop()
-    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or "hyprland" in desktop:
-        return _hyprland
-    if os.environ.get("SWAYSOCK") or "sway" in desktop:
-        return _sway
-    if os.environ.get("NIRI_SOCKET") or "niri" in desktop:
-        return _niri
-    if "kde" in desktop:
+    desktops = _desktops()
+    for variable, name, function in _COMPOSITORS:
+        if name in desktops or (os.environ.get(variable) and not desktops):
+            return globals()[function]
+    if os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return _x11
+    if "kde" in desktops:
         return _kde_wayland
-    if "gnome" in desktop:
+    # GNOME itself, not a desktop built on it (Budgie, Cinnamon, Unity): their
+    # shells do not load GNOME Shell extensions.
+    if desktops[:1] == ["gnome"]:
         return _gnome
     return _unknown
 
