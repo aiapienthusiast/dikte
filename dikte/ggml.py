@@ -95,8 +95,10 @@ Program = collections.namedtuple("Program", "name repo binary health")
 WHISPER = Program("whisper", "ggml-org/whisper.cpp", "whisper-server", "")
 LLAMA = Program("llama", "ggml-org/llama.cpp", "llama-server", "/health")
 DIKTE_REPO = "yusufipk/dikte"
-MANAGED_WHISPER_RELEASE = "whisper.cpp-v1.9.3"
 MANAGED_WHISPER_VERSION = "v1.9.3"
+# The release tags are derived from the version, the same way the workflow
+# derives them, so a bump writes the version and the digest and nothing else.
+MANAGED_WHISPER_RELEASE = f"whisper.cpp-{MANAGED_WHISPER_VERSION}"
 MANAGED_WHISPER_VULKAN = "whisper-bin-ubuntu-vulkan-x64.tar.gz"
 MANAGED_WHISPER_SHA256 = (
     "c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8"
@@ -107,8 +109,9 @@ MANAGED_WHISPER_SHA256 = (
 # built that archive and reviewed it, and until then Windows installs exactly
 # what it did before the bundle existed.
 UNREVIEWED_DIGEST = ""
-MANAGED_WHISPER_WINDOWS_RELEASE = "whisper.cpp-v1.9.4-windows"
 MANAGED_WHISPER_WINDOWS_VERSION = "v1.9.4"
+MANAGED_WHISPER_WINDOWS_RELEASE = (
+    f"whisper.cpp-{MANAGED_WHISPER_WINDOWS_VERSION}-windows")
 MANAGED_WHISPER_WINDOWS_VULKAN = "whisper-bin-win-vulkan-x64.zip"
 MANAGED_WHISPER_WINDOWS_SHA256 = UNREVIEWED_DIGEST
 
@@ -439,8 +442,17 @@ def _managed_whisper(program, tag=""):
     return (not tag and program is WHISPER
             and sys.platform in ("linux", "win32")
             and platform.machine().lower() in ("x86_64", "amd64")
-            and _managed_bundle().sha256 not in ("", UNREVIEWED_DIGEST)
+            and _reviewed(_managed_bundle().sha256)
             and _has_vulkan())
+
+
+def _reviewed(digest):
+    """Whether a pinned digest is a real one rather than the placeholder.
+
+    The placeholder must never be compared with an asset's digest: a file
+    published without one has an empty digest too, and the two would match.
+    """
+    return bool(digest) and digest != UNREVIEWED_DIGEST
 
 
 def _managed_bundle():
@@ -466,13 +478,10 @@ def _managed_asset(refresh=False):
     that is not the reviewed bytes, leaves upstream's processor build as the
     answer, and the install record says which of the two landed.
 
-    A bundle with no reviewed digest is refused before GitHub is asked at
-    all. The empty placeholder must never be compared with an asset's digest
-    either: a file published without one has an empty digest too, and the two
-    would match.
+    A bundle with no reviewed digest is refused before GitHub is asked at all.
     """
     bundle = _managed_bundle()
-    if not bundle.sha256 or bundle.sha256 == UNREVIEWED_DIGEST:
+    if not _reviewed(bundle.sha256):
         return None
     try:
         _, assets = hub.release(DIKTE_REPO, bundle.release, refresh=refresh)

@@ -2052,7 +2052,7 @@ class ManagedWhisperOnWindows(Local):
         return mock.patch.object(ggml, "MANAGED_WHISPER_WINDOWS_SHA256",
                                  self.reviewed)
 
-    def test_the_placeholder_digest_means_fall_back(self):
+    def test_the_placeholder_digest_keeps_windows_on_upstream_as_before(self):
         """Nobody has reviewed a Windows archive yet. Until somebody does,
         Windows behaves exactly as before: GitHub is not asked for the bundle,
         the upstream BLAS build lands, and nothing calls it a fallback."""
