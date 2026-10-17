@@ -1230,7 +1230,7 @@ TR = {
     "In front: {name}": "Öndeki: {name}",
     "The program in front could not be found out.": "Öndeki program bulunamadı.",
     "This desktop does not say which program is in front, so every dictation uses the Default profile unless one is chosen above.": "Bu masaüstü hangi programın önde olduğunu söylemiyor; yukarıda bir profil seçilmedikçe bütün dikteler Varsayılan profili kullanır.",
-    "On KDE Plasma under Wayland the program in front is found with kdotool, when it is installed. Without it, every dictation uses the Default profile.": "Wayland altındaki KDE Plasma'da öndeki program, kuruluysa kdotool ile bulunur. O olmadan bütün dikteler Varsayılan profili kullanır.",
+    "On KDE Plasma under Wayland, per-application profiles need kdotool installed.": "Wayland altındaki KDE Plasma'da uygulamaya göre profiller için kdotool kurulu olmalı.",
     "A profile says how a dictation should read, and can translate it. The Default profile is used unless a named profile lists the program in front when the recording starts. Files, meetings and the agent are never changed by a profile.": "Profil, bir diktenin nasıl okunacağını belirler ve onu çevirebilir. Kayıt başladığında öndeki programı listeleyen adlı bir profil yoksa Varsayılan profil kullanılır. Dosyalar, toplantılar ve ajan hiçbir profilden etkilenmez.",
     "Add profile…": "Profil ekle…",
     "Add profile": "Profil ekle",

@@ -103,8 +103,25 @@ class Choosing(DikteTest):
         self.assertFalse(profiles.choose(self.config(), "slack").shown)
 
     def test_a_retry_finds_its_profile_by_name(self):
-        self.assertEqual(profiles.again(self.conf, "email").name, "Email")
-        self.assertEqual(profiles.again(self.conf, "Gone").name, "")
+        self.assertEqual(profiles.again(self.conf, {"profile": "email"}).name, "Email")
+        self.assertEqual(profiles.again(self.conf, {"profile": "Gone"}).name, "")
+
+    def test_a_retry_finds_a_renamed_profile_by_its_id(self):
+        conf = self.config(profiles=[{"name": "Mail", "id": "abc123", "apps": ["x"]}])
+        row = {"profile": "Mail", "profile_id": "abc123", "program": "thunderbird"}
+        conf["profiles"] = [{"name": "Email", "id": "abc123", "apps": ["x"]}]
+        choice = profiles.again(conf, row)
+        self.assertEqual((choice.name, choice.program, choice.looked),
+                         ("Email", "thunderbird", True))
+
+    def test_a_profile_stored_without_an_id_gets_a_stable_one(self):
+        first = profiles.named_profiles(self.conf)[0]["id"]
+        self.assertTrue(first)
+        self.assertEqual(profiles.named_profiles(self.conf)[0]["id"], first)
+
+    def test_a_short_name_matches_an_application_id(self):
+        conf = self.config(profiles=[{"name": "Term", "apps": ["konsole"]}])
+        self.assertEqual(profiles.choose(conf, "org.kde.konsole").name, "Term")
 
     def test_malformed_profiles_do_not_break_anything(self):
         conf = self.config(profiles=["junk", {"name": ""}, {"name": "A", "apps": 3,
@@ -113,6 +130,16 @@ class Choosing(DikteTest):
                            profile_default=[1, 2])
         self.assertEqual([p["name"] for p in profiles.named_profiles(conf)], ["A"])
         self.assertEqual(profiles.default_profile(conf)["style"], {})
+
+    def test_an_unhashable_target_language_is_no_target(self):
+        for bad in ([], {}, ["de"], 3):
+            conf = self.config(profile_default={"translate_to": bad},
+                               profiles=[{"name": "A", "translate_to": bad}])
+            self.assertEqual(profiles.default_profile(conf)["translate_to"], "")
+            self.assertEqual(profiles.named_profiles(conf)[0]["translate_to"], "")
+            self.assertNotIn("TRANSLATION",
+                             conf.cleanup_prompt(profile=profiles.choose(conf)))
+            self.assertEqual(profiles.language_name(bad), "")
 
     def test_a_malformed_stored_value_falls_back_on_load(self):
         self.write_config({"profiles": "not a list", "profile_style": "yes",
@@ -268,7 +295,8 @@ class Lookup(DikteTest):
         with mock.patch.object(app.frontapp, "program_name", side_effect=slow):
             lookup = app._ProfileLookup(conf, None)
             gate.set()
-            self.assertEqual(lookup.result().name, "Chat")
+            choice = lookup.result()
+            self.assertEqual((choice.name, choice.looked), ("Chat", True))
         self.assertIsNot(threads[0], threading.main_thread())
 
     def test_a_lookup_that_never_answers_falls_back_to_default(self):

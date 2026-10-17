@@ -177,6 +177,11 @@ class Pipeline(QObject):
         conf = self.conf
         if ask:
             profile = None
+        elif hasattr(profile, "result"):
+            # A lookup still working out the program in front, handed over by
+            # app.py so that the main thread never waits on it. This thread
+            # may: the transcript is not ready to clean up before it anyway.
+            profile = profile.result()
         started = time.monotonic()
         raw = ""
         # The row this run has written, so a failure after it (the clipboard
@@ -409,7 +414,11 @@ class Pipeline(QObject):
         saying. The name, not the Choice: a retry looks it up again."""
         if profile is not None and profile.shown:
             record["profile"] = profile.name
-            if profile.program:
+            if profile.id:
+                record["profile_id"] = profile.id
+            # Only when it was asked for: "" then means it could not be found
+            # out, which is worth saying, and a skipped lookup is not.
+            if profile.looked:
                 record["program"] = profile.program
 
     def _learn(self, raw, text, speech_language):

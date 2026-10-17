@@ -630,7 +630,7 @@ class ProfileChain(ChainBase):
     def profiled(self, **values):
         for key, value in values.items():
             self.conf[key] = value
-        return profiles.choose(self.conf, "thunderbird")
+        return profiles.choose(self.conf, "thunderbird", looked=True)
 
     def test_the_profile_shapes_the_prompt_and_is_named_in_the_history(self):
         choice = self.profiled(profiles=[{"name": "Email", "apps": ["thunderbird"],
@@ -648,6 +648,22 @@ class ProfileChain(ChainBase):
         run = self.run_chain(ask=True, profile=choice)
         self.assertNotIn("WRITING STYLE", run["cleanup"].call_args.args[3])
         self.assertNotIn("translate_to", cfg.read_history()[0])
+
+    def test_a_lookup_is_resolved_on_the_dictation_thread(self):
+        """app.py hands over the lookup itself; the main thread never waits."""
+        choice = self.profiled(profiles=[{"name": "Email", "apps": ["thunderbird"]}])
+        lookup = mock.Mock()
+        lookup.result.return_value = choice
+        self.run_chain(profile=lookup)
+        lookup.result.assert_called_once_with()
+        self.assertEqual(cfg.read_history()[0]["profile"], "Email")
+
+    def test_a_skipped_lookup_names_no_program(self):
+        self.conf["profiles"] = [{"name": "Email", "apps": []}]
+        self.run_chain(profile=profiles.choose(self.conf, ""))
+        row = cfg.read_history()[0]
+        self.assertEqual(row["profile"], "")
+        self.assertNotIn("program", row)
 
     def test_without_profiles_the_row_is_the_row_it_always_was(self):
         self.run_chain(profile=profiles.choose(self.conf, "firefox"))
@@ -702,7 +718,11 @@ class ProfileChain(ChainBase):
         self.run_chain(profile=choice, transcribe_error=api.ApiError("bad key"))
         row = cfg.read_history()[0]
         self.assertTrue(row["failed"])
-        self.assertEqual(row["profile"], "Email")
+        self.assertEqual((row["profile"], row["program"]), ("Email", "thunderbird"))
+        self.assertTrue(row["profile_id"])
+        # The retry runs under the same profile, into the same program.
+        again = profiles.again(self.conf, row)
+        self.assertEqual((again.name, again.program), ("Email", "thunderbird"))
 
 
 class DictionaryLearningChain(ChainBase):

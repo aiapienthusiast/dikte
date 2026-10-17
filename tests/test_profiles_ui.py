@@ -70,9 +70,30 @@ class Dictionary(DikteTest):
 
     def test_an_untouched_store_leaves_the_text_alone(self):
         conf = self.config(transcribe_prompt="Paraşüt\nOpenFrame")
+        conf["dictionary_learning"] = True
         editor = self.editor(conf)
-        self.assertIsNone(editor.store(conf))
+        self.assertEqual(editor.store(conf), (None, False))
         self.assertEqual(conf["transcribe_prompt"], "Paraşüt\nOpenFrame")
+
+    def test_deleting_a_word_does_not_join_two_lines(self):
+        editor = self.editor(self.config(transcribe_prompt="A\nB, C"))
+        editor.delete_entries([1])
+        self.assertEqual(dictionary.render_hint(editor.entries()), "A\nC")
+
+    def test_learning_off_or_cleared_forgets_the_names_being_counted(self):
+        conf = self.config(dictionary_learning=True)
+        dictionary.learn(conf, "It runs on OpenFrame now.", "It runs on OpenFrame now.")
+        editor = self.editor(conf)
+        editor.learning.setChecked(False)
+        editor.commit(editor.store(conf))
+        self.assertEqual(dictionary._read_file()["pending"], {})
+        dictionary.learn(conf, "It runs on OpenFrame now.", "It runs on OpenFrame now.")
+        conf["dictionary_learning"] = True
+        editor = self.editor(conf)
+        editor.add_entry("Claude", source=dictionary.AUTO)
+        editor.clear_auto()
+        editor.commit(editor.store(conf))
+        self.assertEqual(dictionary._read_file()["pending"], {})
 
 
 class Profiles(DikteTest):
@@ -159,13 +180,36 @@ class Profiles(DikteTest):
         with mock.patch.object(frontapp, "backend", return_value=frontapp._unknown):
             self.assertIn("does not say", profiles_ui.ProfilesEditor.detection_text())
         with mock.patch.object(frontapp, "backend",
-                               return_value=frontapp._kde_wayland):
-            self.assertIn("kdotool", profiles_ui.ProfilesEditor.detection_text())
+                               return_value=frontapp._kde_wayland), \
+                mock.patch.object(frontapp.shutil, "which", return_value=None):
+            self.assertEqual(
+                profiles_ui.ProfilesEditor.detection_text(),
+                "On KDE Plasma under Wayland, per-application profiles need "
+                "kdotool installed.")
+        with mock.patch.object(frontapp, "backend",
+                               return_value=frontapp._kde_wayland), \
+                mock.patch.object(frontapp.shutil, "which",
+                                  return_value="/usr/bin/kdotool"):
+            self.assertNotIn("kdotool", profiles_ui.ProfilesEditor.detection_text())
+
+    def test_the_kdotool_note_is_translated(self):
+        from dikte import i18n
+        i18n.set_language("tr")
+        with mock.patch.object(frontapp, "backend",
+                               return_value=frontapp._kde_wayland), \
+                mock.patch.object(frontapp.shutil, "which", return_value=None):
+            self.assertIn("kdotool kurulu olmalı",
+                          profiles_ui.ProfilesEditor.detection_text())
 
     def test_find_the_program_name(self):
         editor = self.editor(self.config())
-        with mock.patch.object(frontapp, "program_name", return_value="slack"):
+        with mock.patch.object(profiles_ui.threading, "Thread") as thread, \
+                mock.patch.object(frontapp, "program_name", return_value="slack"):
             editor._show_found()
+            # Off the main thread: the asking is handed to a thread.
+            thread.return_value.start.assert_called_once_with()
+            thread.call_args.kwargs["target"]()
+        QApplication.processEvents()
         self.assertEqual(editor.found.text(), "In front: slack")
 
 
@@ -178,6 +222,12 @@ class HistoryMarks(DikteTest):
                                            "translated": True})
         self.assertIn("profile: Default", marks)
         self.assertIn("translated into German", marks)
+        self.assertNotIn("program", marks)
+        self.assertIn("(program unknown)",
+                      settings_ui.history_marks({"profile": "", "program": ""}))
+        self.assertIn("(slack)",
+                      settings_ui.history_marks({"profile": "", "program": "slack"}))
+        self.assertEqual(settings_ui.history_marks({"translate_to": ["de"]}), "")
         failed = settings_ui.history_marks({"profile": "Email", "translate_to": "de",
                                             "translated": False})
         self.assertIn("profile: Email", failed)

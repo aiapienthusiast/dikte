@@ -10,6 +10,7 @@ anything having been edited.
 """
 
 import copy
+import threading
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -178,6 +179,7 @@ class DictionaryEditor(QWidget):
     def load(self, conf):
         self._entries = dictionary.records(conf)
         self._loaded = [dict(r) for r in self._entries]
+        self._cleared = False
         self.learning.setChecked(bool(conf["dictionary_learning"]))
         self._show()
 
@@ -191,14 +193,23 @@ class DictionaryEditor(QWidget):
         an Apply that edited nothing leaves the dictionary as it was stored,
         down to the commas."""
         conf["dictionary_learning"] = self.learning.isChecked()
+        # The names still being counted are words out of dictations, kept
+        # only for learning: they go when learning is off, or when the user
+        # cleared what it learned.
+        forget = self._cleared or not self.learning.isChecked()
         if self._entries == self._loaded:
-            return None
-        return dictionary.save(conf, self._entries, self._loaded)
+            return (None, forget)
+        return (dictionary.save(conf, self._entries, self._loaded), forget)
 
     @staticmethod
-    def commit(pending):
+    def commit(stored):
+        if stored is None:
+            return
+        pending, forget = stored
         if pending is not None:
-            dictionary.write(pending)
+            dictionary.write(pending, forget)
+        elif forget:
+            dictionary.forget_pending()
 
     # ---- editing ----------------------------------------------------------
 
@@ -232,14 +243,28 @@ class DictionaryEditor(QWidget):
         other = self._index(record["term"])
         if other is not None and other != index:
             return False
+        record["breaks"] = old.get("breaks", 0)
         self._entries[index] = record
         self._show()
         self.changed.emit()
         return True
 
     def delete_entries(self, indexes):
-        keep = set(range(len(self._entries))) - set(indexes)
-        self._entries = [r for i, r in enumerate(self._entries) if i in keep]
+        """Remove records. A line break that stood before one moves on to the
+        record after it, so deleting a word does not join two lines."""
+        doomed = set(indexes)
+        kept, carry = [], 0
+        for i, record in enumerate(self._entries):
+            if i in doomed:
+                carry = max(carry, record.get("breaks", 0))
+                continue
+            if carry and kept:
+                record = dict(record, breaks=max(record.get("breaks", 0), carry))
+            carry = 0
+            kept.append(record)
+        if kept:
+            kept[0] = dict(kept[0], breaks=0)
+        self._entries = kept
         self._show()
         self.changed.emit()
 
@@ -250,6 +275,7 @@ class DictionaryEditor(QWidget):
         if not any(r["source"] == dictionary.AUTO for r in self._entries):
             return
         self._entries = dictionary.clear_auto(self._entries)
+        self._cleared = True
         self._show()
         self.changed.emit()
 
@@ -317,6 +343,7 @@ class ProfilesEditor(QWidget):
     """The Default profile, the named ones, and the switches over all of them."""
 
     changed = pyqtSignal()
+    _found_signal = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -447,6 +474,7 @@ class ProfilesEditor(QWidget):
         self._find_timer = QTimer(self)
         self._find_timer.setSingleShot(True)
         self._find_timer.timeout.connect(self._show_found)
+        self._found_signal.connect(self._found)
 
     # ---- the form ---------------------------------------------------------
 
@@ -493,10 +521,9 @@ class ProfilesEditor(QWidget):
             return t("This desktop does not say which program is in front, so "
                      "every dictation uses the Default profile unless one is "
                      "chosen above.")
-        if backend is frontapp._kde_wayland:
-            return t("On KDE Plasma under Wayland the program in front is found "
-                     "with kdotool, when it is installed. Without it, every "
-                     "dictation uses the Default profile.")
+        if backend is frontapp._kde_wayland and not frontapp.shutil.which("kdotool"):
+            return t("On KDE Plasma under Wayland, per-application profiles need "
+                     "kdotool installed.")
         return t("The program in front is looked up when a recording starts. "
                  "When it cannot be found out or no profile lists it, the Default "
                  "profile is used, and the history names the profile and the program.")
@@ -519,7 +546,7 @@ class ProfilesEditor(QWidget):
         name = " ".join((name or "").split())[:60]
         if not name or self._taken(name):
             return False
-        self._named.append(profiles.clean({"name": name}))
+        self._named.append(profiles.clean({"name": name, "id": profiles.new_id()}))
         self._fill_list(len(self._named))
         self._fill_override(self.override.currentData() or "")
         self.changed.emit()
@@ -684,6 +711,11 @@ class ProfilesEditor(QWidget):
         self._find_timer.start(3000)
 
     def _show_found(self):
-        name = frontapp.program_name()
+        """Ask on a thread of its own: the asking is up to three subprocesses,
+        and this is the main thread. The answer comes back through a signal."""
+        threading.Thread(target=lambda: self._found_signal.emit(
+            frontapp.program_name()), daemon=True).start()
+
+    def _found(self, name):
         self.found.setText(t("In front: {name}", name=name) if name
                            else t("The program in front could not be found out."))

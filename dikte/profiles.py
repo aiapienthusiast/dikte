@@ -19,7 +19,9 @@ prompts of their own, and none of them is ever handed a profile.
 """
 
 import collections
+import hashlib
 import re
+import uuid
 
 from .i18n import t
 
@@ -142,8 +144,14 @@ Yanıtın SADECE çeviri olsun, başka hiçbir şey yazma."""
 # be. `style` holds the preferences that apply (explicit ones over learned
 # ones), already emptied when the style is switched off, and `translate_to`
 # the language code, already "" when translation is.
+# `id` is the profile's own, which a rename leaves alone, "" for Default.
+# `looked` is whether the program in front was asked for at all: an override,
+# the switch being off, or no profile listing a program all skip the asking,
+# and then an empty `program` means nothing.
 Choice = collections.namedtuple(
-    "Choice", "name program style instruction translate_to shown")
+    "Choice", "name program style instruction translate_to shown id looked")
+
+_ID = re.compile(r"^[a-z0-9]{1,32}$")
 
 
 def _text(value, limit=2000):
@@ -186,12 +194,20 @@ def clean(raw, named=True):
         "style": _style(raw.get("style")),
         "learned": _style(raw.get("learned")),
         "instruction": _text(raw.get("instruction")),
-        "translate_to": target if target in _LANGUAGE_NAMES else "",
+        # A string first: a list or a dict cannot even be looked up.
+        "translate_to": (target if isinstance(target, str)
+                         and target in _LANGUAGE_NAMES else ""),
     }
     if named:
         out["name"] = _text(raw.get("name"), 60)
         out["apps"] = _programs(raw.get("apps"))
+        ident = raw.get("id")
+        out["id"] = ident if isinstance(ident, str) and _ID.match(ident) else ""
     return out
+
+
+def new_id():
+    return uuid.uuid4().hex[:12]
 
 
 def default_profile(conf):
@@ -208,6 +224,11 @@ def named_profiles(conf):
         key = profile["name"].casefold()
         if profile["name"] and key not in seen:
             seen.add(key)
+            if not profile["id"]:
+                # One stored before ids, or typed in by hand: named after
+                # itself until the settings window gives it a real one.
+                digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+                profile["id"] = "n" + digest[:12]
             out.append(profile)
     return out
 
@@ -241,11 +262,17 @@ def override(conf):
     return None
 
 
-def by_name(conf, name):
-    """A named profile, or the Default one for "" or a name since removed."""
-    if name:
-        for profile in named_profiles(conf):
-            if profile["name"].casefold() == str(name).casefold():
+def by_name(conf, name, ident=""):
+    """A named profile by its id, then by its name; None (Default) for "" or
+    one since removed."""
+    found = named_profiles(conf)
+    if isinstance(ident, str) and ident:
+        for profile in found:
+            if profile["id"] == ident:
+                return profile
+    if isinstance(name, str) and name:
+        for profile in found:
+            if profile["name"].casefold() == name.casefold():
                 return profile
     return None
 
@@ -255,8 +282,11 @@ def for_program(conf, program):
     key = program_key(program)
     if not key:
         return None
+    # A Wayland window class is often the application id, org.kde.konsole or
+    # org.mozilla.firefox, while people write the short name: both match.
+    keys = {key, key.rsplit(".", 1)[-1]} if " " not in key else {key}
     for profile in named_profiles(conf):
-        if key in profile["apps"]:
+        if keys & set(profile["apps"]):
             return profile
     return None
 
@@ -269,9 +299,10 @@ def effective_style(conf, profile):
     return style
 
 
-def snapshot(conf, profile, program=""):
+def snapshot(conf, profile, program="", looked=False):
     """The Choice for a recording under `profile` (None is Default)."""
     name = profile["name"] if profile is not None else ""
+    ident = profile["id"] if profile is not None else ""
     profile = profile if profile is not None else default_profile(conf)
     styled = bool(conf["profile_style"])
     return Choice(
@@ -281,20 +312,28 @@ def snapshot(conf, profile, program=""):
         instruction=profile["instruction"] if styled else "",
         translate_to=profile["translate_to"] if conf["translation_enabled"] else "",
         shown=in_use(conf),
+        id=ident,
+        looked=bool(looked),
     )
 
 
-def choose(conf, program=""):
-    """The Choice for a recording started with `program` in front."""
+def choose(conf, program="", looked=False):
+    """The Choice for a recording started with `program` in front. `looked`
+    says whether that program was asked for, or skipped as not needed."""
     chosen = override(conf)
     if chosen is None and conf["profile_by_app"]:
         chosen = for_program(conf, program)
-    return snapshot(conf, chosen, program)
+    return snapshot(conf, chosen, program, looked)
 
 
-def again(conf, name):
-    """The Choice for a retry of a dictation first spoken under `name`."""
-    return snapshot(conf, by_name(conf, name))
+def again(conf, row):
+    """The Choice for a retry of the dictation in a history row: the profile
+    it was first spoken under, by id so that a rename does not lose it, and
+    the program it was spoken into, which is not the one in front now."""
+    program = row.get("program")
+    looked = isinstance(program, str)
+    profile = by_name(conf, row.get("profile"), row.get("profile_id"))
+    return snapshot(conf, profile, program if looked else "", looked)
 
 
 def display_name(choice):
@@ -302,6 +341,8 @@ def display_name(choice):
 
 
 def language_name(code, turkish=False):
+    if not isinstance(code, str):
+        return ""
     names = _LANGUAGE_NAMES.get(code)
     if not names:
         return code

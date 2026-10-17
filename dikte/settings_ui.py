@@ -976,10 +976,14 @@ def history_marks(row):
     marks = ""
     if "profile" in row:
         marks += t("  ·  profile: {name}", name=row.get("profile") or t("Default"))
-        marks += (t(" ({program})", program=row["program"]) if row.get("program")
-                  else t(" (program unknown)"))
+        # Only for a row whose program was asked for: one skipped on purpose
+        # (an override, the switch off, no profile listing one) says nothing.
+        program = row.get("program")
+        if isinstance(program, str):
+            marks += (t(" ({program})", program=program) if program
+                      else t(" (program unknown)"))
     code = row.get("translate_to")
-    if code:
+    if isinstance(code, str) and code:
         language = t(profiles.language_name(code))
         marks += (t("  ·  translated into {language}", language=language)
                   if row.get("translated")

@@ -120,10 +120,13 @@ class UpdateCheck(QObject):
 
 
 class _ProfileLookup:
-    """The profile for one recording, worked out beside it."""
+    """The profile for one recording, worked out beside it.
 
-    # Longer than every timeout frontapp allows put together, and still well
-    # under the shortest recording anybody stops on purpose.
+    result() is asked for on the dictation thread, never on this one: it may
+    wait for the lookup, and the main thread is what draws the indicator."""
+
+    # Longer than the three subprocess timeouts frontapp may spend under KDE,
+    # and on the dictation thread, where a wait holds up nothing on screen.
     WAIT = 3.0
 
     def __init__(self, conf, front):
@@ -139,11 +142,11 @@ class _ProfileLookup:
             self._thread = threading.Thread(target=self._look, daemon=True)
             self._thread.start()
         else:
-            self._choose("")
+            self._choose("", looked=False)
 
-    def _choose(self, program):
+    def _choose(self, program, looked=True):
         try:
-            self._choice = profiles.choose(self._conf, program)
+            self._choice = profiles.choose(self._conf, program, looked)
         except Exception as exc:  # a profile is never worth a dictation
             print(f"dikte: could not choose a profile: {exc}", file=sys.stderr)
 
@@ -1197,9 +1200,10 @@ class Dikte:
         owner, self.recorder_owner = self.recorder_owner, None
         wants_paste = self.paste_override.pop(owner, None)
         focus, self.front_before = self.front_before, None
-        lookup = getattr(self, "profile_before", None)
+        # Handed over unresolved: the pipeline asks for the result on its own
+        # thread, so a slow lookup never stalls this one.
+        profile = getattr(self, "profile_before", None)
         self.profile_before = None
-        profile = lookup.result() if lookup is not None else None
         if owner == ASK:
             self.ask_pipeline.run(wav_path, duration, rms_values, ask=True,
                                   paste=wants_paste, focus=focus)
@@ -1221,7 +1225,7 @@ class Dikte:
         # Under the profile it was first spoken under, looked up by name: the
         # program it was spoken into is not in front now.
         try:
-            profile = profiles.again(self.conf, row.get("profile") or "")
+            profile = profiles.again(self.conf, row)
         except Exception:
             profile = None
         queued = self.pipeline.run(row.get("audio") or "",
