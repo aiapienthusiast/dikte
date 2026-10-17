@@ -24,8 +24,10 @@ PREVIEW_CHARS = 1500
 
 
 def _tip(text):
-    """A tooltip that shows `text` as typed: Qt reads tooltips as rich text."""
-    return "<qt>" + html.escape(text) + "</qt>"
+    """A tooltip that shows `text` as typed: Qt reads tooltips as rich text,
+    so it is escaped, and pre-wrap keeps its line breaks."""
+    return ("<qt><div style='white-space:pre-wrap'>" + html.escape(text)
+            + "</div></qt>")
 
 
 def _one_line(text, limit=90):
@@ -36,12 +38,16 @@ def _one_line(text, limit=90):
 class AnswerWindow(QDialog):
     # Carried out on a thread of its own; this is how a failure comes back.
     apply_failed = pyqtSignal(str)
+    # The outcome of Copy, off the interface thread: '' or the error.
+    copy_done = pyqtSignal(str)
 
     def __init__(self, instruction, answer, selected="", can_apply=False,
                  apply_fn=None, agent="", parent=None):
         super().__init__(parent)
         self._apply_fn = apply_fn
         self._thread = None
+        self._copy_thread = None
+        self.copy_done.connect(self._copied)
         self.setWindowTitle(t("Dikte: {name}", name=agent) if agent else "Dikte")
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.resize(520, 360)
@@ -92,6 +98,20 @@ class AnswerWindow(QDialog):
     def can_apply(self):
         return self.apply_button.isVisibleTo(self)
 
+    @property
+    def busy(self):
+        """Whether an Apply or a Copy is still running for this window."""
+        return any(thread is not None and thread.is_alive()
+                   for thread in (self._thread, self._copy_thread))
+
+    def _emit(self, signal, message):
+        # A window replaced by a newer answer may be gone by the time its
+        # thread finishes; there is then nobody left to tell.
+        try:
+            signal.emit(message)
+        except RuntimeError:
+            pass
+
     def text(self):
         return self.answer.toPlainText()
 
@@ -106,22 +126,39 @@ class AnswerWindow(QDialog):
             try:
                 self._apply_fn(text)
             except paste.PasteError as exc:
-                self.apply_failed.emit(str(exc))
+                self._emit(self.apply_failed, str(exc))
             except Exception as exc:  # the window is gone; say it somewhere
-                self.apply_failed.emit(t("Unexpected error: {error}", error=exc))
+                self._emit(self.apply_failed,
+                           t("Unexpected error: {error}", error=exc))
 
         self._thread = threading.Thread(target=work, daemon=True)
         self._thread.start()
         self.accept()
 
     def copy(self):
-        try:
-            # Under the paste lock, so a dictation restoring its clipboard at
-            # this moment cannot put the old contents back over the answer.
-            with selection._paste_lock():
-                paste.copy(self.text())
-        except paste.PasteError as exc:
-            self.copy_button.setToolTip(_tip(str(exc)))
+        """Put the text on the clipboard, on a thread of its own.
+
+        It takes the paste lock, so a dictation restoring its clipboard at this
+        moment cannot put the old contents back over the answer, and waiting
+        for that lock must not freeze the window.
+        """
+        text = self.text()
+
+        def work():
+            try:
+                with selection._paste_lock():
+                    paste.copy(text)
+            except paste.PasteError as exc:
+                self._emit(self.copy_done, str(exc) or "error")
+                return
+            self._emit(self.copy_done, "")
+
+        self._copy_thread = threading.Thread(target=work, daemon=True)
+        self._copy_thread.start()
+
+    def _copied(self, error):
+        if error:
+            self.copy_button.setToolTip(_tip(error))
             self.copy_button.setText(t("Copy failed"))
-            return
-        self.copy_button.setText(t("Copied"))
+        else:
+            self.copy_button.setText(t("Copied"))

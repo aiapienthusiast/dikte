@@ -98,6 +98,9 @@ class Capture(DikteTest):
         self.calls.read_text.return_value = "the selection"
         for name in ("read_clipboard", "read_text", "copy", "copy_bytes", "press"):
             self.patch_attr(paste, name, getattr(self.calls, name))
+        self.patch_attr(selection, "_win_let_go_of_modifiers", self.calls.let_go)
+        self.patch_attr(selection, "_win_clipboard_empty", self.calls.win_empty)
+        self.calls.win_empty.return_value = False
 
     def capture(self, desktop, primary=None, ready=True, focus=None):
         with mock.patch.object(paste, "desktop", return_value=desktop), \
@@ -163,12 +166,41 @@ class Capture(DikteTest):
         self.assertEqual(got, selection.NOTHING)
         self.calls.copy_bytes.assert_called_once_with(b"what was there")
 
-    def test_an_empty_clipboard_is_put_back_empty(self):
-        self.calls.read_clipboard.return_value = None
-        self.capture(paste.WAYLAND, primary=None, ready=True)
+    def test_an_empty_windows_clipboard_is_put_back_empty(self):
+        self.calls.read_clipboard.return_value = b""
+        self.calls.win_empty.return_value = True
+        got = self.capture(paste.WINDOWS)
+        self.assertEqual(got.text, "the selection")
         self.assertEqual(self.calls.copy.call_args_list,
                          [mock.call(""), mock.call("")])
         self.calls.copy_bytes.assert_not_called()
+
+    def test_a_windows_clipboard_holding_an_image_is_never_touched(self):
+        """Only text is read there; b"" with formats on it is not empty."""
+        self.calls.read_clipboard.return_value = b""
+        self.calls.win_empty.return_value = False
+        got = self.capture(paste.WINDOWS)
+        self.assertEqual(got, selection.NOTHING)
+        self.calls.copy.assert_not_called()
+        self.calls.press.assert_not_called()
+        self.calls.copy_bytes.assert_not_called()
+
+    def test_a_linux_clipboard_that_cannot_be_read_is_never_wiped(self):
+        self.calls.read_clipboard.return_value = None
+        got = self.capture(paste.X11, primary=None, ready=True)
+        self.assertEqual(got, selection.NOTHING)
+        self.calls.copy.assert_not_called()
+        self.calls.press.assert_not_called()
+
+    def test_windows_lets_go_of_the_hotkey_modifiers_before_copying(self):
+        self.capture(paste.WINDOWS)
+        names = self.names()
+        self.assertLess(names.index("let_go"), names.index("press"))
+
+    def test_macos_needs_no_modifier_release(self):
+        """CGEventSetFlags sets the modifiers outright there."""
+        self.capture(paste.MACOS)
+        self.calls.let_go.assert_not_called()
 
     def test_a_windows_clipboard_that_cannot_be_read_is_left_alone(self):
         """None there means another program holds it, not that it is empty."""
@@ -337,7 +369,10 @@ class Window(DikteTest):
         with mock.patch.object(paste, "copy") as copy, \
                 mock.patch.object(paste, "press") as press:
             window.copy_button.click()
+            window._copy_thread.join(2)
+        QApplication.processEvents()
         copy.assert_called_once_with("Short.")
+        self.assertEqual(window.copy_button.text(), "Copied")
         press.assert_not_called()
         apply_fn.assert_not_called()
 
@@ -357,6 +392,26 @@ class Window(DikteTest):
         QApplication.processEvents()
         self.assertEqual(len(failures), 1)
         self.assertIn("nope", failures[0])
+
+    def test_copy_does_not_wait_on_the_paste_lock_in_the_interface(self):
+        """A dictation holding the lock must not freeze the window."""
+        window, _ = self.make(can_apply=False)
+        lock = worker._paste_lock
+        lock.acquire()
+        try:
+            with mock.patch.object(paste, "copy") as copy:
+                window.copy_button.click()   # returns although the lock is held
+                self.assertTrue(window.busy)
+                copy.assert_not_called()
+        finally:
+            lock.release()
+        window._copy_thread.join(2)
+
+    def test_the_selection_tooltip_keeps_its_line_breaks(self):
+        window, _ = self.make(selected="line one\nline two")
+        tip = window.selection.toolTip()
+        self.assertIn("pre-wrap", tip)
+        self.assertIn("line one\nline two", tip)
 
     def test_markup_in_the_selection_is_shown_as_text(self):
         window, _ = self.make(selected="<b>bold</b> & <img src=x>")
@@ -557,6 +612,19 @@ class App(DikteTest):
         long = "x" * (selection.MAX_CHARS + 1)
         self.assertFalse(self.answer(selection.EDIT, selected=long).can_apply)
 
+    def test_a_replaced_window_is_kept_until_its_apply_finishes(self):
+        target = self.controller(True)
+        old = mock.Mock(busy=True)
+        target.answer_window = old
+        target._retired_answers = [mock.Mock(busy=False)]
+        payload = {"instruction": "q", "text": "a", "kind": selection.ANSWER,
+                   "selection": "", "warning": "", "focus": None}
+        with mock.patch.object(app, "_present"):
+            app.Dikte._show_answer(target, payload, "Claude")
+        self.addCleanup(target.answer_window.deleteLater)
+        old.close.assert_called_once_with()
+        self.assertEqual(target._retired_answers, [old])
+
     def test_a_discarded_question_cancels_its_copy(self):
         target = self.controller(True)
         grab = mock.Mock()
@@ -571,45 +639,106 @@ class App(DikteTest):
         self.assertIsNone(target.assist_grab)
 
 
-class ReadOnly(DikteTest):
-    """A run carrying selected text goes out with the write tools taken away."""
+class ToolFree(DikteTest):
+    """Selected text only ever reaches a run with no tools at all."""
 
-    def command(self, run, read_only, **settings):
+    def command(self, tool_free, **settings):
         conf = self.config(**settings)
         with mock.patch.object(assistant, "_stream", return_value=(0, "")) as stream, \
                 mock.patch.object(assistant, "_conclude", return_value=("ok", "")):
-            run("prompt", conf, "", None, None, keep=False, read_only=read_only)
+            extra = {"tool_free": True} if tool_free else {}
+            assistant._ask_claude("prompt", conf, "", None, None, keep=False, **extra)
         return stream.call_args.args[0]
 
-    def test_claude_is_denied_commands_writes_and_fetches(self):
-        cmd = self.command(assistant._ask_claude, True)
-        denied = cmd[cmd.index("--disallowedTools") + 1:]
-        for tool in ("Bash", "Edit", "Write", "WebFetch"):
-            self.assertIn(tool, denied)
-        self.assertNotIn("--disallowedTools",
-                         self.command(assistant._ask_claude, False))
+    def test_claude_gets_no_tools_no_mcp_and_a_mode_settings_cannot_widen(self):
+        cmd = self.command(True, assistant_permission_mode="bypassPermissions")
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+        self.assertIn("--strict-mcp-config", cmd)
+        self.assertNotIn("--mcp-config", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "dontAsk")
+        self.assertNotIn("bypassPermissions", cmd)
 
-    def test_codex_runs_in_its_read_only_sandbox(self):
-        cmd = self.command(assistant._ask_codex, True,
-                           assistant_codex_sandbox="workspace-write")
-        self.assertIn('sandbox_mode="read-only"', cmd)
-        cmd = self.command(assistant._ask_codex, False,
-                           assistant_codex_sandbox="workspace-write")
-        self.assertIn('sandbox_mode="workspace-write"', cmd)
+    def test_a_plain_claude_run_is_as_before(self):
+        cmd = self.command(False, assistant_permission_mode="bypassPermissions")
+        self.assertNotIn("--tools", cmd)
+        self.assertNotIn("--strict-mcp-config", cmd)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "bypassPermissions")
 
-    def test_the_worker_asks_read_only_only_when_something_was_selected(self):
+    def test_codex_and_antigravity_refuse_selected_text(self):
+        for name in ("codex", "agy"):
+            with self.subTest(provider=name), \
+                    mock.patch.object(assistant, "_stream") as stream, \
+                    mock.patch.object(subprocess, "Popen") as popen:
+                conf = self.config(assistant_provider=name)
+                with self.assertRaises(assistant.AssistantError) as caught:
+                    assistant.ask("prompt", conf, keep_session=False, tool_free=True)
+                self.assertIn("selected text", str(caught.exception))
+                stream.assert_not_called()
+                popen.assert_not_called()
+
+    def test_the_refusal_is_translated(self):
+        from dikte import i18n
+        conf = self.config(assistant_provider="agy")
+        i18n.set_language("tr")
+        with self.assertRaises(assistant.AssistantError) as caught:
+            assistant.ask("prompt", conf, tool_free=True)
+        self.assertIn("seçili metin", str(caught.exception))
+
+    def test_a_chat_provider_is_tool_free_already(self):
+        conf = self.config(assistant_provider="openrouter", openrouter_api_key="k")
+        with mock.patch.object(api, "chat", return_value="Hi"):
+            self.assertEqual(assistant.ask("p", conf, keep_session=False,
+                                           tool_free=True), ("Hi", ""))
+
+    def test_the_worker_asks_tool_free_only_when_something_was_selected(self):
         chain = Chain("test_an_edit_is_handed_over_not_applied")
         chain.setUp()
         self.addCleanup(chain.doCleanups)
         run = chain.run_chain(Chain.grab("Some text."))
-        self.assertIs(run.ask.call_args.kwargs["read_only"], True)
+        self.assertIs(run.ask.call_args.kwargs["tool_free"], True)
         run = chain.run_chain(Chain.grab(""), reply="Lima.")
-        self.assertIs(run.ask.call_args.kwargs["read_only"], False)
+        self.assertIs(run.ask.call_args.kwargs["tool_free"], False)
 
-    def test_the_prompt_stops_inviting_tools_when_text_is_selected(self):
+    def test_the_prompt_says_there_are_no_tools_when_text_is_selected(self):
         prompt = selection.build_prompt("summarise", "text", True)
         self.assertNotIn("look it up", prompt)
-        self.assertIn("Do not run commands", prompt)
+        self.assertIn("no tools", prompt)
+
+
+class WinModifiers(DikteTest):
+    def user32(self, held_rounds):
+        user32 = mock.Mock()
+        state = {"calls": 0}
+
+        def key_state(vk):
+            state["calls"] += 1
+            return 0x8000 if vk == 0x12 and held_rounds() else 0
+
+        user32.GetAsyncKeyState.side_effect = key_state
+        return user32
+
+    def test_waits_for_the_hand_to_come_up(self):
+        rounds = iter([True, True, False, False, False])
+        user32 = self.user32(lambda: next(rounds, False))
+        with mock.patch.object(paste, "_win_api", return_value=(user32, None)), \
+                mock.patch.object(selection.time, "sleep"):
+            selection._win_let_go_of_modifiers()
+        user32.SendInput.assert_not_called()
+
+    def test_releases_a_modifier_still_held(self):
+        user32 = self.user32(lambda: True)
+        clock = iter(range(0, 100))
+        with mock.patch.object(paste, "_win_api", return_value=(user32, None)), \
+                mock.patch.object(selection.time, "sleep"), \
+                mock.patch.object(selection.time, "monotonic",
+                                  side_effect=lambda: next(clock)):
+            selection._win_let_go_of_modifiers(timeout=2)
+        user32.SendInput.assert_called_once()
+        inputs = user32.SendInput.call_args.args[1]
+        self.assertEqual(len(inputs), 1)
+        self.assertEqual(inputs[0].union.ki.wVk, 0x12)
+        self.assertEqual(inputs[0].union.ki.dwFlags, paste._WIN_KEYUP)
 
 
 class Session(DikteTest):

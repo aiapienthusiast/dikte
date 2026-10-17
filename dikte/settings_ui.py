@@ -2047,9 +2047,10 @@ class SettingsWindow(QDialog):
             "answer opens in a window with Copy, and Apply for edits; nothing "
             "is pasted until you press Apply. On Linux the selection is read "
             "directly; on macOS and Windows Dikte presses the copy shortcut and "
-            "puts your clipboard back afterwards. The selection is sent to the "
-            "agent as data, is not kept in the history, and does not join the "
-            "conversation."))
+            "puts your clipboard back afterwards. The selection goes to the "
+            "agent as data, with no tools; Codex and Antigravity are not sent "
+            "it. The history keeps your instruction and the reply, which for "
+            "an edit is the rewritten text."))
         selected_form.addRow("", self.selection_assist)
         self._shortcut_row(
             selected_form, "assist", t("Shortcut"),

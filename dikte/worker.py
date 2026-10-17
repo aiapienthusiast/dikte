@@ -291,8 +291,10 @@ class Pipeline(QObject):
                         should_stop=self._stop.is_set,
                         keep_session=False,
                         # Selected text was not written by the user and may
-                        # carry instructions of its own.
-                        read_only=bool(selected.text),
+                        # carry instructions of its own, so it only goes to a
+                        # run with no tools; a provider that cannot do that
+                        # refuses it with a message.
+                        tool_free=bool(selected.text),
                         system=selection.SYSTEM_PROMPT,
                     )
                     kind, text = selection.parse_reply(reply, selected.text)

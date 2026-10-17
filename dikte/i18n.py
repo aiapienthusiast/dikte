@@ -1186,14 +1186,21 @@ TR = {
     "opens in a window with Copy, and Apply for edits; nothing is pasted until "
     "you press Apply. On Linux the selection is read directly; on macOS and "
     "Windows Dikte presses the copy shortcut and puts your clipboard back "
-    "afterwards. The selection is sent to the agent as data, is not kept in "
-    "the history, and does not join the conversation.":
+    "afterwards. The selection goes to the agent as data, with no tools; "
+    "Codex and Antigravity are not sent it. The history keeps your "
+    "instruction and the reply, which for an edit is the rewritten text.":
         "Metni seç, kısayola bas ve onunla ne yapılacağını söyle. Cevap, "
         "kopyalama düğmesi ve düzenlemeler için Uygula düğmesi olan bir "
         "pencerede açılır; Uygula'ya basmadan hiçbir şey yapıştırılmaz. "
         "Linux'ta seçim doğrudan okunur; macOS ve Windows'ta Dikte kopyalama "
-        "kısayoluna basar ve panonu sonra eski haline getirir. Seçim ajana veri "
-        "olarak gönderilir, geçmişte saklanmaz ve konuşmaya katılmaz.",
+        "kısayoluna basar ve panonu sonra eski haline getirir. Seçim ajana "
+        "veri olarak, araçsız gönderilir; Codex ve Antigravity'ye gönderilmez. "
+        "Geçmişte talimatın ve cevap saklanır; düzenlemelerde bu, yeniden "
+        "yazılmış metindir.",
+    "{name} cannot run without tools, so selected text is not sent to it. "
+    "Use Claude Code or a chat provider.":
+        "{name} araçsız çalıştırılamadığı için seçili metin ona gönderilmez. "
+        "Claude Code'u ya da bir sohbet sağlayıcısını kullan.",
     "Dikte: {name}": "Dikte: {name}",
     "You said: {text}": "Söylediğin: {text}",
     "About the selection ({count} characters)": "Seçim hakkında ({count} karakter)",

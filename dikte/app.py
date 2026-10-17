@@ -180,6 +180,9 @@ class Dikte:
         # key press and the window its answer is shown in.
         self.assist_grab = None
         self.answer_window = None
+        # Replaced answer windows whose Apply or Copy is still running, kept
+        # alive until it has finished and reported.
+        self._retired_answers = []
 
         self.overlay = Overlay(self.conf["overlay_corner"],
                                screen_name=self.conf["overlay_screen"],
@@ -1325,8 +1328,13 @@ class Dikte:
 
     def _show_answer(self, payload, agent):
         old = getattr(self, "answer_window", None)
+        retired = [window for window in getattr(self, "_retired_answers", [])
+                   if window.busy]
         if old is not None:
             old.close()
+            if old.busy:
+                retired.append(old)
+        self._retired_answers = retired
         focus = payload.get("focus")
         selected = payload.get("selection") or ""
         # Apply is for an edit of something that was selected, on a desktop
