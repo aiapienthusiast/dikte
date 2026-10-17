@@ -386,9 +386,12 @@ def forget_pending(texts=None):
         if texts is None:
             pending = {}
         else:
-            rows = [_tokens(t) for t in texts if isinstance(t, str)]
-            pending = {term: value for term, value in stored["pending"].items()
-                       if not any(_occurs(_tokens(term), row) for row in rows)}
+            rows = [_joined(_tokens(t)) for t in texts if isinstance(t, str)]
+            pending = {}
+            for term, value in stored["pending"].items():
+                needle = _joined(_tokens(term))
+                if needle == _SEP or not any(needle in row for row in rows):
+                    pending[term] = value
             if len(pending) == len(stored["pending"]):
                 return
         _write(stored["entries"], pending, stored["synced"], stored["rejected"],
@@ -489,11 +492,14 @@ def _tokens(text):
     return [_key(w) for w in _WORD.findall(text)]
 
 
-def _occurs(term, words):
-    """Whether the word sequence `term` stands whole somewhere in `words`."""
-    size = len(term)
-    return bool(size) and any(words[i:i + size] == term
-                              for i in range(len(words) - size + 1))
+# Never part of a word, so words joined and wrapped with it can be searched
+# for a whole run of words with one substring test instead of a Python loop
+# per position: deleting a few hundred rows must not freeze the window.
+_SEP = "\x00"
+
+
+def _joined(words):
+    return _SEP + _SEP.join(words) + _SEP
 
 
 def candidates(text):
