@@ -14,9 +14,14 @@ way paste.py and audio.py are laid out:
             process, through user32 and kernel32
   X11       xprop: the active window from the root, then its process id, and
             the process name from /proc; the window class when there is no pid
-  Wayland   no protocol tells a client which window has focus. KDE's kdotool
-            can ask KWin, so it is used where it is installed; anywhere else
-            the answer is unknown
+  Wayland   no protocol tells a client which window has focus, so each
+            compositor is asked in its own way, where it has one:
+              KDE       kdotool, when it is installed
+              Hyprland  hyprctl activewindow -j
+              Sway      swaymsg -t get_tree, the focused node
+              niri      niri msg --json focused-window
+              GNOME     the "Window Calls" Shell extension over D-Bus
+            anywhere else (river, Wayfire, labwc, COSMIC...) it is unknown
 
 The name is the program's own (thunderbird, slack, code, firefox), lower case
 and without an .exe, which is what a profile lists.
@@ -30,14 +35,19 @@ Recording permission for other programs' titles, so it reads none. A title is
 returned to the caller and nothing else: it is never logged or kept here.
 """
 
+import ast
 import ctypes
+import glob
+import json
 import os
 import shutil
 import subprocess
 import sys
 
 # Each call's limit: long enough for a busy X server. Two calls at most on
-# X11 and three under KDE, all on a thread of their own (see app.py).
+# X11, three or four under KDE, one on Hyprland, Sway and niri, and under
+# GNOME one List, a bounded number of Details and one GetTitle; all on a
+# thread of their own (see app.py).
 TIMEOUT = 0.5
 
 
@@ -271,6 +281,150 @@ def _unknown(_pid=None, title_for=None):
     return "" if title_for is None else ("", "")
 
 
+def _json(text):
+    try:
+        return json.loads(text) if text.strip() else None
+    except ValueError:
+        return None
+
+
+def _answer(name, title, title_for):
+    """What every backend hands back: the name alone when no title was asked
+    for, else the pair, the title only for a program `title_for` wants."""
+    name = name if isinstance(name, str) else ""
+    if title_for is None:
+        return name
+    title = title if isinstance(title, str) else ""
+    return name, (title if name and title_for(_clean(name)) else "")
+
+
+def _hyprland(_pid=None, title_for=None):
+    """One call: the active window's class (the one it started with when it
+    has none now) and its title, in one JSON object."""
+    if not shutil.which("hyprctl"):
+        return _answer("", "", title_for)
+    window = _json(_run(["hyprctl", "activewindow", "-j"]))
+    if not isinstance(window, dict):
+        return _answer("", "", title_for)
+    name = window.get("class") or window.get("initialClass") or ""
+    return _answer(name, window.get("title"), title_for)
+
+
+def _sway_focused(node):
+    """The focused node of a sway tree, tiled or floating, or None."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        if current.get("focused") is True:
+            return current
+        for key in ("nodes", "floating_nodes"):
+            children = current.get(key)
+            if isinstance(children, list):
+                stack.extend(children)
+    return None
+
+
+def _sway(_pid=None, title_for=None):
+    """One call: the whole tree, then the focused node in it. A native window
+    names itself by app_id; one under Xwayland has none, and its X11 class
+    stands in."""
+    if not shutil.which("swaymsg"):
+        return _answer("", "", title_for)
+    focused = _sway_focused(_json(_run(["swaymsg", "-t", "get_tree", "-r"])))
+    if focused is None:
+        return _answer("", "", title_for)
+    name = focused.get("app_id")
+    if not name:
+        properties = focused.get("window_properties")
+        name = properties.get("class") if isinstance(properties, dict) else ""
+    return _answer(name or "", focused.get("name"), title_for)
+
+
+def _niri(_pid=None, title_for=None):
+    """One call; "null" when nothing has focus, and either field may be
+    missing."""
+    if not shutil.which("niri"):
+        return _answer("", "", title_for)
+    window = _json(_run(["niri", "msg", "--json", "focused-window"]))
+    if not isinstance(window, dict):
+        return _answer("", "", title_for)
+    return _answer(window.get("app_id") or "", window.get("title"), title_for)
+
+
+_GNOME_WINDOWS = ["gdbus", "call", "--session", "--dest", "org.gnome.Shell",
+                  "--object-path", "/org/gnome/Shell/Extensions/Windows",
+                  "--method"]
+_GNOME_INTERFACE = "org.gnome.Shell.Extensions.Windows."
+# Details asked of at most this many windows, newest first, looking for the
+# focused one: the asking is one call each.
+GNOME_DETAILS_LIMIT = 12
+
+
+def _gvariant_string(output):
+    """The one string out of what gdbus prints for a reply: a GVariant tuple,
+    ('...',), in a syntax close enough to Python's literals to be read as
+    one. Anything else is ""."""
+    text = output.strip()
+    try:
+        value = ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return ""
+    if isinstance(value, tuple) and value and isinstance(value[0], str):
+        return value[0]
+    return ""
+
+
+def _gnome_call(method, *arguments):
+    return _gvariant_string(_run(_GNOME_WINDOWS + [_GNOME_INTERFACE + method]
+                                 + [str(a) for a in arguments]))
+
+
+def _gnome(_pid=None, title_for=None):
+    """GNOME Shell keeps window focus to itself; the Window Calls extension
+    lends it out over D-Bus. List first (which may already say which window
+    has focus), Details for each until the focused one, and the title only
+    for a program that wants it. Without the extension every call fails,
+    and the answer is unknown."""
+    if not shutil.which("gdbus"):
+        return _answer("", "", title_for)
+    windows = _json(_gnome_call("List"))
+    if not isinstance(windows, list):
+        return _answer("", "", title_for)
+    windows = [w for w in windows if isinstance(w, dict)
+               and isinstance(w.get("id"), int) and not isinstance(w.get("id"), bool)]
+    focused = next((w for w in windows if w.get("focus") is True), None)
+    if focused is None and not any("focus" in w for w in windows):
+        for window in list(reversed(windows))[:GNOME_DETAILS_LIMIT]:
+            details = _json(_gnome_call("Details", window["id"]))
+            if isinstance(details, dict) and details.get("focus") is True:
+                focused = dict(window, **details)
+                break
+    if focused is None:
+        return _answer("", "", title_for)
+    name = focused.get("wm_class") or focused.get("wm_class_instance") or ""
+    if not isinstance(name, str):
+        name = ""
+    title = ""
+    if title_for is not None and name and title_for(_clean(name)):
+        title = _gnome_call("GetTitle", focused["id"])
+    return name if title_for is None else (name, title)
+
+
+def gnome_extension_installed():
+    """Whether the Window Calls extension is on disk, looked for without a
+    subprocess: the settings window asks while it is being built."""
+    roots = [os.path.expanduser("~/.local/share/gnome-shell/extensions"),
+             "/usr/share/gnome-shell/extensions",
+             "/usr/local/share/gnome-shell/extensions"]
+    return any(glob.glob(os.path.join(root, "window-calls*")) for root in roots)
+
+
+def _desktop():
+    return os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+
+
 def backend():
     """The function that can answer on this session. Read every time, like
     paste.desktop(), so a test can say where it is standing."""
@@ -281,8 +435,17 @@ def backend():
     if os.environ.get("XDG_SESSION_TYPE") == "x11" or (
             os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY")):
         return _x11
-    if "kde" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower():
+    desktop = _desktop()
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or "hyprland" in desktop:
+        return _hyprland
+    if os.environ.get("SWAYSOCK") or "sway" in desktop:
+        return _sway
+    if os.environ.get("NIRI_SOCKET") or "niri" in desktop:
+        return _niri
+    if "kde" in desktop:
         return _kde_wayland
+    if "gnome" in desktop:
+        return _gnome
     return _unknown
 
 

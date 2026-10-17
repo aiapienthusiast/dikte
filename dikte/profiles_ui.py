@@ -593,12 +593,15 @@ class ProfilesEditor(QWidget):
         """What this session can tell about the program in front."""
         backend = frontapp.backend()
         if backend is frontapp._unknown:
-            return t("This desktop does not say which program is in front, so "
-                     "every dictation uses the Default profile unless one is "
-                     "chosen above.")
+            return t("Per-application profiles are not available on this "
+                     "desktop, so every dictation uses the Default profile "
+                     "unless one is chosen above.")
         if backend is frontapp._kde_wayland and not frontapp.shutil.which("kdotool"):
             return t("On KDE Plasma under Wayland, per-application profiles need "
                      "kdotool installed.")
+        if backend is frontapp._gnome and not frontapp.gnome_extension_installed():
+            return t("On GNOME, per-application profiles need the “Window "
+                     "Calls” GNOME Shell extension installed.")
         return t("The program in front is looked up when a recording starts. "
                  "When it cannot be found out or no profile lists it, the Default "
                  "profile is used, and the history names the profile and the program.")

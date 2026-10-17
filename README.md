@@ -190,7 +190,8 @@ running.
   you list under Cleanup rules go to the transcription model as a hint and to the
   cleanup model as a glossary, which is what lets it recognise "kuber netis"
   (the writing profiles, which set a tone per program or translate the result,
-  all share it):
+  all share it; on Linux, choosing one by program needs kdotool on KDE and the
+  Window Calls extension on GNOME, and nothing on X11, Hyprland, Sway or niri):
 
   ```
   raw    ıı bugün şey kuber netis üzerinde çalışan servisleri güncelledim

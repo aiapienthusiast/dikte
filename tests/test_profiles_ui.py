@@ -188,7 +188,8 @@ class Profiles(DikteTest):
 
     def test_the_detection_note_names_what_this_desktop_can_do(self):
         with mock.patch.object(frontapp, "backend", return_value=frontapp._unknown):
-            self.assertIn("does not say", profiles_ui.ProfilesEditor.detection_text())
+            self.assertIn("not available on this desktop",
+                          profiles_ui.ProfilesEditor.detection_text())
         with mock.patch.object(frontapp, "backend",
                                return_value=frontapp._kde_wayland), \
                 mock.patch.object(frontapp.shutil, "which", return_value=None):

@@ -1,7 +1,9 @@
 """Which program is in front, on each of the four systems, with the system
 itself faked at the one place each backend asks it."""
 
+import contextlib
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -31,7 +33,24 @@ class Chooser(DikteTest):
                       frontapp._kde_wayland)
         self.assertIs(self.backend("linux", WAYLAND_DISPLAY="wayland-0",
                                    XDG_CURRENT_DESKTOP="GNOME"),
-                      frontapp._unknown)
+                      frontapp._gnome)
+        self.assertIs(self.backend("linux", WAYLAND_DISPLAY="wayland-0",
+                                   HYPRLAND_INSTANCE_SIGNATURE="abc"),
+                      frontapp._hyprland)
+        self.assertIs(self.backend("linux", WAYLAND_DISPLAY="wayland-0",
+                                   SWAYSOCK="/run/user/1000/sway.sock"),
+                      frontapp._sway)
+        self.assertIs(self.backend("linux", WAYLAND_DISPLAY="wayland-0",
+                                   NIRI_SOCKET="/run/user/1000/niri.sock"),
+                      frontapp._niri)
+        self.assertIs(self.backend("linux", WAYLAND_DISPLAY="wayland-0",
+                                   XDG_CURRENT_DESKTOP="Hyprland"),
+                      frontapp._hyprland)
+        for desktop in ("river", "Wayfire", "labwc:wlroots", "COSMIC", ""):
+            with self.subTest(desktop=desktop):
+                self.assertIs(self.backend("linux", WAYLAND_DISPLAY="wayland-0",
+                                           XDG_CURRENT_DESKTOP=desktop),
+                              frontapp._unknown)
 
     def test_a_failing_backend_is_an_unknown_program(self):
         with mock.patch.object(frontapp, "backend",
@@ -160,3 +179,142 @@ class MacOS(DikteTest):
         from dikte import mac_window
         with mock.patch.object(mac_window, "frontmost_pid", return_value=None):
             self.assertEqual(frontapp._macos(None), "")
+
+
+def is_browser(name):
+    return name in ("firefox", "org.mozilla.firefox")
+
+
+class WaylandCompositors(DikteTest):
+    def replies(self, *outputs, tool="/usr/bin/tool"):
+        return (mock.patch.object(frontapp.shutil, "which", return_value=tool),
+                mock.patch.object(frontapp.subprocess, "run",
+                                  side_effect=[finished(o) for o in outputs]))
+
+    def answer(self, function, *outputs, title_for=is_browser):
+        which, run = self.replies(*outputs)
+        with which, run as called:
+            result = function(title_for=title_for)
+        return result, called
+
+    def test_hyprland(self):
+        result, run = self.answer(frontapp._hyprland, json.dumps(
+            {"class": "firefox", "initialClass": "firefox", "title": "Gmail",
+             "pid": 7}))
+        self.assertEqual(result, ("firefox", "Gmail"))
+        self.assertEqual(run.call_args.args[0], ["hyprctl", "activewindow", "-j"])
+        result, _ = self.answer(frontapp._hyprland, json.dumps(
+            {"class": "", "initialClass": "Slack", "title": "general"}))
+        self.assertEqual(result, ("Slack", ""))
+        self.assertEqual(self.answer(frontapp._hyprland, "{}")[0], ("", ""))
+        self.assertEqual(self.answer(frontapp._hyprland, "not json")[0], ("", ""))
+
+    def test_sway_walks_tiled_and_floating_nodes(self):
+        tree = {"nodes": [{"nodes": [{"focused": False, "app_id": "foot"}],
+                           "floating_nodes": [{"focused": True, "app_id": "firefox",
+                                               "name": "YouTube"}]}]}
+        result, run = self.answer(frontapp._sway, json.dumps(tree))
+        self.assertEqual(result, ("firefox", "YouTube"))
+        self.assertEqual(run.call_args.args[0], ["swaymsg", "-t", "get_tree", "-r"])
+
+    def test_sway_under_xwayland_uses_the_x11_class(self):
+        tree = {"nodes": [{"focused": True, "app_id": None, "name": "Doc",
+                           "window_properties": {"class": "libreoffice-writer"}}]}
+        self.assertEqual(self.answer(frontapp._sway, json.dumps(tree))[0],
+                         ("libreoffice-writer", ""))
+        self.assertEqual(self.answer(frontapp._sway, json.dumps({"nodes": []}))[0],
+                         ("", ""))
+
+    def test_niri(self):
+        result, run = self.answer(frontapp._niri, json.dumps(
+            {"app_id": "org.mozilla.firefox", "title": "WhatsApp"}))
+        self.assertEqual(result, ("org.mozilla.firefox", "WhatsApp"))
+        self.assertEqual(run.call_args.args[0], ["niri", "msg", "--json", "focused-window"])
+        self.assertEqual(self.answer(frontapp._niri, "null")[0], ("", ""))
+        self.assertEqual(self.answer(frontapp._niri, json.dumps({"title": "x"}))[0],
+                         ("", ""))
+
+    def test_a_missing_tool_or_a_timeout_is_unknown(self):
+        for function in (frontapp._hyprland, frontapp._sway, frontapp._niri,
+                         frontapp._gnome):
+            with self.subTest(function=function.__name__):
+                with mock.patch.object(frontapp.shutil, "which", return_value=None):
+                    self.assertEqual(function(), "")
+                with mock.patch.object(frontapp.shutil, "which", return_value="/x"), \
+                        mock.patch.object(frontapp.subprocess, "run",
+                                          side_effect=subprocess.TimeoutExpired("x", 0.5)):
+                    self.assertEqual(function(title_for=is_browser), ("", ""))
+
+    def test_gnome_reads_list_then_details_then_the_title(self):
+        windows = [{"id": 11, "wm_class": "org.gnome.Nautilus", "pid": 1},
+                   {"id": 22, "wm_class": "firefox", "wm_class_instance": "Navigator",
+                    "pid": 2}]
+        listed = "(" + repr(json.dumps(windows)) + ",)"
+        details = "(" + repr(json.dumps({"id": 22, "focus": True})) + ",)"
+        title = "('Inbox - Gmail \u2014 Mozilla Firefox',)"
+        result, run = self.answer(frontapp._gnome, listed, details, title)
+        self.assertEqual(result, ("firefox", "Inbox - Gmail \u2014 Mozilla Firefox"))
+        self.assertEqual(len(run.call_args_list), 3)
+        self.assertTrue(run.call_args_list[0].args[0][-1].endswith(".List"))
+        self.assertEqual(run.call_args_list[1].args[0][-2:],
+                         ["org.gnome.Shell.Extensions.Windows.Details", "22"])
+        self.assertEqual(run.call_args_list[2].args[0][-2:],
+                         ["org.gnome.Shell.Extensions.Windows.GetTitle", "22"])
+
+    def test_gnome_uses_focus_from_the_list_when_it_has_it(self):
+        windows = [{"id": 5, "wm_class": "code", "focus": True}]
+        result, run = self.answer(frontapp._gnome, "(" + repr(json.dumps(windows)) + ",)")
+        self.assertEqual(result, ("code", ""))
+        self.assertEqual(run.call_count, 1)
+
+    def test_gnome_without_the_extension_is_unknown(self):
+        failed = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject")
+        with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/gdbus"), \
+                mock.patch.object(frontapp.subprocess, "run", return_value=failed) as run:
+            self.assertEqual(frontapp._gnome(title_for=is_browser), ("", ""))
+        self.assertEqual(run.call_count, 1)
+
+    def test_gvariant_strings_are_read_robustly(self):
+        self.assertEqual(frontapp._gvariant_string("('[1, 2]',)\n"), "[1, 2]")
+        self.assertEqual(frontapp._gvariant_string("('it\\'s',)"), "it's")
+        self.assertEqual(frontapp._gvariant_string("(\"say 'hi'\",)"), "say 'hi'")
+        self.assertEqual(frontapp._gvariant_string("garbage ("), "")
+        self.assertEqual(frontapp._gvariant_string("(uint32 5,)"), "")
+
+    def test_gnome_asks_details_of_a_bounded_number_of_windows(self):
+        windows = [{"id": i, "wm_class": "x"} for i in range(40)]
+        outputs = ["(" + repr(json.dumps(windows)) + ",)"] + \
+            ["(" + repr(json.dumps({"focus": False})) + ",)"] * 40
+        result, run = self.answer(frontapp._gnome, *outputs)
+        self.assertEqual(result, ("", ""))
+        self.assertEqual(run.call_count, 1 + frontapp.GNOME_DETAILS_LIMIT)
+
+
+class DesktopNotes(DikteTest):
+    def note(self, backend, **patches):
+        from dikte import profiles_ui
+        with mock.patch.object(frontapp, "backend", return_value=backend):
+            with (mock.patch.multiple(frontapp, **patches) if patches
+                  else contextlib.nullcontext()):
+                return profiles_ui.ProfilesEditor.detection_text()
+
+    def test_gnome_without_window_calls_says_so(self):
+        note = self.note(frontapp._gnome, gnome_extension_installed=lambda: False)
+        self.assertIn("Window Calls", note)
+        self.assertNotIn("Window Calls", self.note(
+            frontapp._gnome, gnome_extension_installed=lambda: True))
+
+    def test_the_gnome_note_is_translated(self):
+        from dikte import i18n
+        i18n.set_language("tr")
+        note = self.note(frontapp._gnome, gnome_extension_installed=lambda: False)
+        self.assertIn("eklentisi kurulu olmalı", note)
+
+    def test_an_unknown_desktop_says_profiles_are_not_available(self):
+        self.assertIn("not available on this desktop", self.note(frontapp._unknown))
+
+    def test_hyprland_sway_and_niri_need_nothing(self):
+        for backend in (frontapp._hyprland, frontapp._sway, frontapp._niri):
+            with self.subTest(backend=backend.__name__):
+                self.assertIn("looked up when a recording starts", self.note(backend))

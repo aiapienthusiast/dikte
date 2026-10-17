@@ -184,7 +184,9 @@ olmasını ister.
   bağlam netleştirmiyorsa dokunmaması isteniyor. Temizleme kuralları sekmesine
   yazdığın isimler transkripsiyon modeline ipucu, temizleme modeline sözlük
   olarak gidiyor; "kuber netis"i tanımasını sağlayan da bu (programa göre üslup
-  seçen ya da sonucu çeviren yazım profillerinin hepsi aynı sözlüğü kullanıyor):
+  seçen ya da sonucu çeviren yazım profillerinin hepsi aynı sözlüğü kullanıyor;
+  Linux'ta profilin programa göre seçilmesi için KDE'de kdotool, GNOME'da Window
+  Calls eklentisi gerekiyor, X11, Hyprland, Sway ve niri'de bir şey gerekmiyor):
 
   ```
   ham    ıı bugün şey kuber netis üzerinde çalışan servisleri güncelledim
