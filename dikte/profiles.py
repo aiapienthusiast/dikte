@@ -305,11 +305,12 @@ def _browser_part(part):
 
 _EDGE = frozenset(("microsoftedge", "microsoftedgebeta", "microsoftedgedev",
                    "microsoftedgecanary"))
-# What a browser profile is called, in the part Edge, and Firefox or Zen with
-# more than one profile, put before the browser's own name ("WhatsApp —
-# Original profile — Zen Browser"). Written folded, the way fold() leaves the
-# text it is matched against: the dotless and dotted i are a plain i there
-# (Varsayılan is varsayilan).
+# What a browser profile is called, in the part before the browser's own name.
+# It is taken off for any browser that writes its name into the title (Edge,
+# and Firefox or Zen with several profiles): "WhatsApp \u2014 Original profile
+# \u2014 Zen Browser". Written folded, the way fold() leaves the text it is
+# matched against: the dotless and dotted i are a plain i there (Varsayılan is
+# varsayilan).
 _BROWSER_PROFILE = re.compile(
     r"^(?:personal|work|school|guest|default|kişisel|iş|okul|misafir|varsayilan"
     r"|original profile|default profile|default-release|default-esr"
@@ -371,11 +372,12 @@ def site_segments(title):
     and on Edge, last of all, the part before the last: Edge puts a
     profile's name there under any name the user gave it, so when no
     recognised profile was taken off, the last part may be one ("Page -
-    Medium - Team") and the site the part before it. Firefox and Zen put one
-    there too, but only with more than one profile; theirs are taken off by
-    name, and page text is never tried for them. It
-    is tried only after every profile failed on everything else, and never
-    once a profile's name was taken off, when it is the page's own text.
+    Medium - Team") and the site the part before it. A recognised profile
+    name is taken off for any browser that writes its name into the title
+    (Edge, and Firefox or Zen with several profiles); the part before the
+    last is tried only on Edge, only after every profile failed on
+    everything else, and never once a profile's name was taken off, when it
+    is the page's own text.
     Never the whole title, nor the parts in between: a site matches the
     site's name in the title, not the page's text."""
     parts, edge, profiled = _parse_title(title)

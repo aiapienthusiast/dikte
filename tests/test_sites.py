@@ -294,8 +294,10 @@ class Editor(DikteTest):
             thread.call_args.kwargs["target"]()
         QApplication.processEvents()
         self.assertEqual(editor.current()["sites"], ["WhatsApp"])
-        self.assertIn("firefox", editor.site_status.text())
-        self.assertIn("Mozilla Firefox", editor.site_status.text())
+        # One line on screen; what was read, in its tooltip.
+        self.assertEqual(editor.site_status.text(), "Added “WhatsApp”.")
+        self.assertIn("firefox", editor.site_status.toolTip())
+        self.assertIn("Mozilla Firefox", editor.site_status.toolTip())
         self.assertTrue(editor.read_site_button.isEnabled())
         editor.store(conf)
         self.assertNotIn("Mozilla", repr(conf["profiles"]))
@@ -323,9 +325,10 @@ class Editor(DikteTest):
 
     def test_the_tab_says_what_is_read_and_where_it_is_not(self):
         with mock.patch.object(frontapp, "backend", return_value=frontapp._macos):
-            self.assertIn("not available on macOS", profiles_ui.ProfilesEditor.sites_text())
+            self.assertEqual(profiles_ui.ProfilesEditor.sites_text(),
+                             "Site matching is not available on macOS.")
         with mock.patch.object(frontapp, "backend", return_value=frontapp._x11):
-            self.assertIn("never saved", profiles_ui.ProfilesEditor.sites_text())
+            self.assertIn("never saved", profiles_ui.ProfilesEditor.sites_tooltip())
 
 
 class CountdownEdges(DikteTest):
@@ -381,7 +384,7 @@ class CountdownEdges(DikteTest):
         editor = self.editor(self.config(profiles=[{"name": "Chat"}]))
         editor._site_question, editor._site_target = 9, editor.current()
         editor._titled(9, "firefox", "Mozilla Firefox")
-        self.assertIn("Open the site's tab first", editor.site_status.text())
+        self.assertIn("open the site's tab first", editor.site_status.text())
         self.assertEqual(editor.current()["sites"], [])
 
 
@@ -433,7 +436,8 @@ class EdgeAndFirstParts(DikteTest):
 
     def test_the_help_text_says_page_text_does_not_match(self):
         with mock.patch.object(frontapp, "backend", return_value=frontapp._x11):
-            self.assertIn("not the text of the page", profiles_ui.ProfilesEditor.sites_text())
+            self.assertIn("not the text of the page",
+                          profiles_ui.ProfilesEditor.sites_tooltip())
 
 
 class Selection(DikteTest):

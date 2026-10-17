@@ -309,3 +309,34 @@ class CorrectionEntries(DikteTest):
         self.assertEqual(editor.entries()[0]["spelling"], "Claude-Code")
         editor.delete_entries([0])
         self.assertEqual(editor.entries(), [])
+
+
+class NoWallsOfText(DikteTest):
+    """At most one sentence of text on screen per control; the rest belongs
+    in tooltips."""
+
+    def sentences(self, text):
+        import re
+        return len(re.findall(r"[.!?](?:\s|$)", text.strip()))
+
+    def test_every_label_in_the_editors_is_one_sentence(self):
+        from PyQt6.QtWidgets import QCheckBox, QLabel
+        from dikte import i18n
+        for language in ("en", "tr"):
+            i18n.set_language(language)
+            for editor in (profiles_ui.DictionaryEditor(), profiles_ui.ProfilesEditor()):
+                self.addCleanup(editor.deleteLater)
+                editor.load(self.config())
+                for widget in editor.findChildren((QLabel, QCheckBox)):
+                    with self.subTest(language=language, text=widget.text()[:40]):
+                        self.assertLessEqual(self.sentences(widget.text()), 1)
+
+    def test_the_long_explanations_are_tooltips(self):
+        editor = profiles_ui.DictionaryEditor()
+        self.addCleanup(editor.deleteLater)
+        self.assertIn("three dictations unchanged", editor.learning.toolTip())
+        profile_editor = profiles_ui.ProfilesEditor()
+        self.addCleanup(profile_editor.deleteLater)
+        self.assertIn("looked up when a recording starts", profile_editor.by_app.toolTip())
+        self.assertIn("not kept", profile_editor.style_learning.toolTip())
+        self.assertIn("Titles are never saved", profile_editor.sites.toolTip())

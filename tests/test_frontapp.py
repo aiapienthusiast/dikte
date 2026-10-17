@@ -329,4 +329,4 @@ class DesktopNotes(DikteTest):
     def test_hyprland_sway_and_niri_need_nothing(self):
         for backend in (frontapp._hyprland, frontapp._sway, frontapp._niri):
             with self.subTest(backend=backend.__name__):
-                self.assertIn("looked up when a recording starts", self.note(backend))
+                self.assertEqual(self.note(backend), "")

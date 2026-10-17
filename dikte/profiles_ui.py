@@ -120,12 +120,12 @@ class EntryDialog(QDialog):
         self.term.setPlaceholderText(t("e.g. dikte"))
         self.spelling = QLineEdit(spelling)
         self.spelling.setPlaceholderText(t("Optional, e.g. Dikte"))
-        form.addRow(t("Word or expression"), self.term)
-        form.addRow(t("Preferred spelling"), self.spelling)
-        form.addRow(_muted(t(
+        self.spelling.setToolTip(t(
             "Leave the spelling empty when the word is already written the way "
             "you want it. With one, the cleanup model is told to write the "
-            "word that way.")))
+            "word that way."))
+        form.addRow(t("Word or expression"), self.term)
+        form.addRow(t("Preferred spelling"), self.spelling)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
                                    | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -148,11 +148,14 @@ class DictionaryEditor(QWidget):
         self._loaded = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(_label(t(
+        # One sentence on screen; how it is used is in the tooltip.
+        intro = _label(t("Names and terms you use; they help transcription and cleanup."))
+        intro.setToolTip(t(
             "Names and terms you say often. They go to the transcription model "
             "as a hint, and to the cleanup model as a glossary, so it can "
             "repair the ones that still come out wrong. Every profile uses "
-            "the same dictionary, and so do audio files and meetings.")))
+            "the same dictionary, and so do audio files and meetings."))
+        layout.addWidget(intro)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText(t("Search"))
@@ -192,7 +195,9 @@ class DictionaryEditor(QWidget):
         self.learning = QCheckBox(t("Learn names and terms from my dictations"))
         self.learning.toggled.connect(lambda *_: self.changed.emit())
         layout.addWidget(self.learning)
-        layout.addWidget(_muted(t(
+        layout.addWidget(_muted(t("Learns after three dictations; nothing leaves "
+                                  "your computer.")))
+        self.learning.setToolTip(t(
             "Only ordinary dictations are read, and only once they have been "
             "cleaned up and finished without a warning: never meetings, files, "
             "the agent, translations, the clipboard or other programs. A name "
@@ -202,7 +207,7 @@ class DictionaryEditor(QWidget):
             "(Klod Kod to Claude Code), with what it was heard as. Until then "
             "what is being counted is kept in the dictionary file. A learned "
             "entry you delete is not learned again. Nothing is sent anywhere to "
-            "do this.")))
+            "do this."))
 
     # ---- the form ---------------------------------------------------------
 
@@ -398,11 +403,13 @@ class ProfilesEditor(QWidget):
         self._countdown_timer.timeout.connect(self._tick)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(_label(t(
+        intro = _label(t("A profile sets how dictation reads, and can translate it."))
+        intro.setToolTip(t(
             "A profile says how a dictation should read, and can translate it. "
             "The Default profile is used unless a named profile lists the "
             "program in front when the recording starts. Files, meetings and "
-            "the agent are never changed by a profile.")))
+            "the agent are never changed by a profile."))
+        layout.addWidget(intro)
 
         switches = QGroupBox(t("What profiles may do"))
         column = QVBoxLayout(switches)
@@ -413,12 +420,21 @@ class ProfilesEditor(QWidget):
             "built-in one, and the style is still added after it; switch this "
             "off to use your own instruction alone."))
         self.by_app = QCheckBox(t("Choose the profile by the program in front"))
+        self.by_app.setToolTip(t(
+            "The program in front is looked up when a recording starts. "
+            "When it cannot be found out or no profile lists it, the Default "
+            "profile is used, and the history names the profile and the program."))
         self.translation = QCheckBox(t("Translate when the profile has a target language"))
         self.translation.setToolTip(t(
             "The translation is made after the recording, by the cleanup "
             "model, before the text is pasted. It is not live. If it fails, "
             "the original transcript is copied and nothing is pasted."))
         self.style_learning = QCheckBox(t("Use the style learned from examples I paste in"))
+        self.style_learning.setToolTip(t(
+            "Paste something you wrote, or a dictation and the way you "
+            "corrected it. It is read on this computer and not kept: only the "
+            "preferences found in it are, shown above, and a choice you made "
+            "yourself always wins over a learned one."))
         for box in (self.use_style, self.by_app, self.translation,
                     self.style_learning):
             box.toggled.connect(self._switched)
@@ -428,9 +444,13 @@ class ProfilesEditor(QWidget):
         choose = QFormLayout()
         self.override = QComboBox()
         self.override.currentIndexChanged.connect(self._edited)
+        self.override.setToolTip(t(
+            "Automatic chooses by the program or site in front. A profile "
+            "picked here is used for every dictation instead."))
         choose.addRow(t("Profile for every dictation"), self.override)
         layout.addLayout(choose)
         self.detection = _muted(self.detection_text())
+        self.detection.setVisible(bool(self.detection.text()))
         layout.addWidget(self.detection)
         self.find_button = QPushButton(t("Find the program name"))
         self.find_button.setToolTip(t(
@@ -484,6 +504,8 @@ class ProfilesEditor(QWidget):
         self.remove_site_button.clicked.connect(self.remove_selected_sites)
         self.site_status = _muted()
         self.sites_note = _muted(self.sites_text())
+        self.sites.setToolTip(self.sites_tooltip())
+        self.sites_note.setToolTip(self.sites_tooltip())
         sites = QVBoxLayout()
         sites.addWidget(self.sites)
         typed = QHBoxLayout()
@@ -523,11 +545,9 @@ class ProfilesEditor(QWidget):
 
         self.teach = QGroupBox(t("Learn the style from examples"))
         teach = QVBoxLayout(self.teach)
-        teach.addWidget(_muted(t(
-            "Paste something you wrote, or a dictation and the way you "
-            "corrected it. It is read on this computer and not kept: only the "
-            "preferences found in it are, shown above, and a choice you made "
-            "yourself always wins over a learned one.")))
+        teach.addWidget(_muted(t("Paste your own writing; only the preferences "
+                                 "found in it are kept.")))
+        self.teach.setToolTip(self.style_learning.toolTip())
         self.examples = QPlainTextEdit()
         self.examples.setPlaceholderText(t("Examples of your own writing"))
         self.examples.setMaximumHeight(90)
@@ -609,22 +629,26 @@ class ProfilesEditor(QWidget):
         """What this session can tell about the program in front."""
         backend = frontapp.backend()
         if backend is frontapp._unknown:
-            return t("Per-application profiles are not available on this "
-                     "desktop, so every dictation uses the Default profile "
-                     "unless one is chosen above.")
+            return t("Per-application profiles are not available on this desktop.")
         if backend is frontapp._kde_wayland and not frontapp.shutil.which("kdotool"):
             return t("On KDE Plasma under Wayland, per-application profiles need "
                      "kdotool installed.")
         if backend is frontapp._gnome and frontapp.gnome_extension["present"] is False:
             return t("On GNOME, per-application profiles need the “Window "
                      "Calls” GNOME Shell extension installed.")
-        return t("The program in front is looked up when a recording starts. "
-                 "When it cannot be found out or no profile lists it, the Default "
-                 "profile is used, and the history names the profile and the program.")
+        # Nothing to warn about: how the lookup works is the by-app tooltip.
+        return ""
 
     @staticmethod
     def sites_text():
-        """What reading a site involves, said next to the sites themselves."""
+        """The one line shown under the sites."""
+        if frontapp.backend() is frontapp._macos:
+            return t("Site matching is not available on macOS.")
+        return t("Matches the site's name in the browser tab's title.")
+
+    @staticmethod
+    def sites_tooltip():
+        """What reading a site involves, in full."""
         if frontapp.backend() is frontapp._macos:
             return t("Site matching is not available on macOS: reading another "
                      "program's window title needs a permission Dikte does not "
@@ -725,35 +749,35 @@ class ProfilesEditor(QWidget):
         target, self._site_target = self._site_target, None
         if target is None or not any(target is p for p in self._named):
             # Removed, or the settings reloaded, while the countdown ran.
-            self.site_status.setText(t(
-                "The profile changed while the tab was being read, so nothing "
-                "was added. Try Add site again."))
+            self._status(t("The profile changed meanwhile; nothing was added."))
             return
         if not program:
-            self.site_status.setText(t("The program in front could not be found out."))
+            self._status(t("The program in front could not be found out."))
             return
         if not profiles.is_browser(program):
-            self.site_status.setText(t(
-                "In front: {name}, which is not a browser Dikte knows. List it "
-                "under Programs instead.", name=program))
+            self._status(t("{name} is not a browser Dikte knows.", name=program),
+                         t("List it under Programs instead."))
             return
         keyword = profiles.propose_site(title)
         if not keyword:
             # A blank tab, or a title that is only the browser's own name:
             # never add the browser as a site.
-            self.site_status.setText(t(
-                "Read from {browser}, but its title names no site. Open the "
-                "site's tab first, then try again.", browser=program))
+            self._status(t("No site in the title; open the site's tab first."),
+                         t("Read from {browser}.", browser=program))
             return
         # Shown so the user can see where the keyword came from. Only on
         # screen: the title is not stored anywhere.
         added = target is not None and self.add_site(keyword, target)
-        self.site_status.setText(t(
-            "Read from {browser}: “{title}”. Added “{site}”; double-click it "
-            "to change it.", browser=program, title=title, site=keyword)
-            if added else t(
-            "Read from {browser}: “{title}”. “{site}” is already listed.",
-            browser=program, title=title, site=keyword))
+        read = t("Read from {browser}: “{title}”. Double-click a site to change it.",
+                 browser=program, title=title)
+        self._status(t("Added “{site}”.", site=keyword) if added
+                     else t("“{site}” is already listed.", site=keyword), read)
+
+    def _status(self, line, detail=""):
+        """The one line under the sites, with what lies behind it in its
+        tooltip."""
+        self.site_status.setText(line)
+        self.site_status.setToolTip(detail)
 
     def _fill_sites(self, profile):
         filling, self._filling = self._filling, True
@@ -840,9 +864,8 @@ class ProfilesEditor(QWidget):
         for box in (self.examples, self.before, self.after):
             box.clear()
         if not found:
-            self.learn_result.setText(t(
-                "Nothing clear enough to learn from that. A few sentences more "
-                "would help."))
+            self.learn_result.setText(t("Not enough to learn from; paste a few "
+                                        "more sentences."))
             return {}
         profile = self.current()
         profile["learned"] = dict(profile["learned"], **found)
