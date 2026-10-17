@@ -54,9 +54,25 @@ class X11(DikteTest):
                 self.answers("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00007\n",
                              "_NET_WM_PID(CARDINAL) = 4242\n"
                              'WM_CLASS(STRING) = "Navigator", "firefox"\n') as run, \
-                mock.patch.object(frontapp, "_process_name", return_value="thunderbird"):
-            self.assertEqual(frontapp._x11(), "thunderbird")
+                mock.patch.object(frontapp, "_process_name", return_value="electron"):
+            # The class, not the runtime the window happens to run on.
+            self.assertEqual(frontapp._x11(), "firefox")
         self.assertEqual(run.call_args.args[0][:3], ["xprop", "-id", "0x3a00007"])
+
+    def test_without_a_class_the_process_will_do(self):
+        with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
+                self.answers("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x1\n",
+                             "_NET_WM_PID(CARDINAL) = 42\n"), \
+                mock.patch.object(frontapp, "_process_name", return_value="xterm"):
+            self.assertEqual(frontapp._x11(), "xterm")
+
+    def test_an_upgraded_program_loses_the_deleted_mark(self):
+        with mock.patch.object(frontapp.os, "readlink",
+                               return_value="/usr/lib/thunderbird/thunderbird (deleted)"):
+            self.assertEqual(frontapp._process_name(42), "thunderbird")
+        with mock.patch.object(frontapp, "backend",
+                               return_value=lambda pid: "Thunderbird (deleted)"):
+            self.assertEqual(frontapp.program_name(), "thunderbird")
 
     def test_without_a_pid_the_window_class_will_do(self):
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/xprop"), \
@@ -80,7 +96,14 @@ class X11(DikteTest):
 
 class KDEWayland(DikteTest):
     def test_kdotool_asks_kwin(self):
-        replies = [finished("{1234-abcd}\n"), finished("777\n")]
+        replies = [finished("{1234-abcd}\n"), finished("org.kde.konsole\n")]
+        with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/kdotool"), \
+                mock.patch.object(frontapp.subprocess, "run", side_effect=replies) as run:
+            self.assertEqual(frontapp._kde_wayland(), "org.kde.konsole")
+        self.assertEqual(run.call_args.args[0][:2], ["kdotool", "getwindowclassname"])
+
+    def test_kdotool_without_a_class_falls_back_to_the_process(self):
+        replies = [finished("{1234-abcd}\n"), finished(""), finished("777\n")]
         with mock.patch.object(frontapp.shutil, "which", return_value="/usr/bin/kdotool"), \
                 mock.patch.object(frontapp.subprocess, "run", side_effect=replies), \
                 mock.patch.object(frontapp, "_process_name", return_value="code"):

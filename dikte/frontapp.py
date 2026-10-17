@@ -29,14 +29,15 @@ import shutil
 import subprocess
 import sys
 
-# Long enough for a busy X server, short enough that the key press does not
-# visibly wait on it. Two calls at most on X11, one under KDE.
+# Each call's limit: long enough for a busy X server. Two calls at most on
+# X11 and three under KDE, all on a thread of their own (see app.py).
 TIMEOUT = 0.5
 
 
 def _clean(name):
     # Either separator, so a Windows path reads the same wherever this runs.
-    name = (name or "").strip().replace("\\", "/").rsplit("/", 1)[-1].lower()
+    name = _undeleted((name or "").strip())
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if name.endswith(".exe"):
         name = name[:-4]
     return name
@@ -51,12 +52,22 @@ def _run(argv):
     return res.stdout if res.returncode == 0 else ""
 
 
+_DELETED = " (deleted)"
+
+
+def _undeleted(name):
+    """What /proc says of a program upgraded while it ran: "thunderbird
+    (deleted)", the file it was started from being gone."""
+    return name[:-len(_DELETED)] if name.endswith(_DELETED) else name
+
+
 def _process_name(pid):
-    """A Linux process's name, from /proc. The executable's base name is the
-    better answer (comm is cut at 15 characters), with comm when it is not
-    readable."""
+    """A Linux process's name, from /proc: the executable's base name, or comm
+    (cut at 15 characters) when that is not readable. Only the fallback: a
+    window's class names the program better, since this says "electron",
+    "python3.14" or "java" for whatever runs on one of those."""
     try:
-        return os.path.basename(os.readlink(f"/proc/{int(pid)}/exe"))
+        return _undeleted(os.path.basename(os.readlink(f"/proc/{int(pid)}/exe")))
     except (OSError, ValueError):
         pass
     try:
@@ -163,26 +174,27 @@ def _x11(_pid=None):
             # class, which is the program; the first is one of its windows.
             parts = [p.strip().strip('"') for p in line.split("=", 1)[1].split(",")]
             klass = parts[-1] if parts else ""
-    if pid.isdigit():
-        name = _process_name(pid)
-        if name:
-            return name
-    return klass
+    # The class first: the process behind a window is often a runtime shared
+    # by many programs, and a Flatpak's pid is not even one of this system's.
+    if klass:
+        return klass
+    return _process_name(pid) if pid.isdigit() else ""
 
 
 def _kde_wayland(_pid=None):
-    """KWin through kdotool, the one Wayland compositor with a way to ask."""
+    """KWin through kdotool, the one Wayland compositor with a way to ask.
+    The window class first, for the same reason as under X11, and the process
+    only when there is no class."""
     if not shutil.which("kdotool"):
         return ""
     window = _run(["kdotool", "getactivewindow"]).strip()
     if not window:
         return ""
+    klass = _run(["kdotool", "getwindowclassname", window]).strip()
+    if klass:
+        return klass
     pid = _run(["kdotool", "getwindowpid", window]).strip()
-    if pid.isdigit():
-        name = _process_name(pid)
-        if name:
-            return name
-    return _run(["kdotool", "getwindowclassname", window]).strip()
+    return _process_name(pid) if pid.isdigit() else ""
 
 
 def _unknown(_pid=None):
