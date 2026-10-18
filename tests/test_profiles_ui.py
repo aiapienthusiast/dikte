@@ -335,8 +335,16 @@ class NoWallsOfText(DikteTest):
         editor = profiles_ui.DictionaryEditor()
         self.addCleanup(editor.deleteLater)
         self.assertIn("three dictations unchanged", editor.learning.toolTip())
-        profile_editor = profiles_ui.ProfilesEditor()
+        # Pin a backend that reads titles: on macOS the sites tooltip says
+        # site matching is unavailable instead.
+        with mock.patch.object(frontapp, "backend", return_value=frontapp._unknown):
+            profile_editor = profiles_ui.ProfilesEditor()
         self.addCleanup(profile_editor.deleteLater)
         self.assertIn("looked up when a recording starts", profile_editor.by_app.toolTip())
         self.assertIn("not kept", profile_editor.style_learning.toolTip())
         self.assertIn("Titles are never saved", profile_editor.sites.toolTip())
+
+    def test_macos_explains_why_sites_do_not_match(self):
+        with mock.patch.object(frontapp, "backend", return_value=frontapp._macos):
+            self.assertIn("not available on macOS", profiles_ui.ProfilesEditor.sites_tooltip())
+            self.assertIn("not available on macOS", profiles_ui.ProfilesEditor.sites_text())
