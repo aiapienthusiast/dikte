@@ -99,6 +99,7 @@ AGY_MODELS = [
 CLEANUP_PROVIDERS = [
     ("OpenRouter", "openrouter"), ("Google AI Studio", "gemini"),
     ("DeepSeek", "deepseek"), ("OpenCode Go", "opencode"), ("Requesty", "requesty"),
+    ("Cheaper Inference", "cheaperinference"),
     ("Custom server", "custom"), ("This machine (llama.cpp)", "local"), ("Claude Code", "claude"),
     ("Codex", "codex"), ("Antigravity", "agy"),
 ]
@@ -114,7 +115,7 @@ MEETING_MODELS = [
 ASSISTANT_PROVIDERS = [
     ("Claude Code", "claude"), ("Codex", "codex"), ("Antigravity", "agy"),
     ("OpenRouter", "openrouter"), ("OpenCode Go", "opencode"),
-    ("Requesty", "requesty"),
+    ("Requesty", "requesty"), ("Cheaper Inference", "cheaperinference"),
 ]
 # Aliases resolve to the newest model of that name, so they age better than an
 # id does; a full id can be typed in when a particular one is wanted.
@@ -135,6 +136,11 @@ OPENCODE_MODELS = [
     "deepseek-v4-flash", "deepseek-v4-pro", "glm-5.3", "glm-5.2", "glm-5.1",
     "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "longcat-2.0",
     "mimo-v2.5", "mimo-v2.5-pro", "hy3",
+]
+# The same for Cheaper Inference, an OpenAI-compatible gateway whose ids are
+# bare names; its Fetch button reads the full list from /models.
+CHEAPERINFERENCE_MODELS = [
+    "gpt-5.4-mini", "gpt-5.4", "deepseek-v4-flash", "glm-5.3", "claude-sonnet-5",
 ]
 # The same idea for Requesty, whose Fetch button puts its managed models (the
 # short names) ahead of the full vendor/model catalog.
@@ -998,6 +1004,7 @@ class SettingsWindow(QDialog):
     _gemini_models_loaded = pyqtSignal(list, str)
     _deepseek_models_loaded = pyqtSignal(list, str)
     _opencode_models_loaded = pyqtSignal(list, str)
+    _cheaperinference_models_loaded = pyqtSignal(list, str)
     _requesty_models_loaded = pyqtSignal(list, str)
     _custom_models_loaded = pyqtSignal(list, str)
     _transcribe_models_loaded = pyqtSignal(list, str)
@@ -1104,6 +1111,8 @@ class SettingsWindow(QDialog):
         self._transcribe_models_loaded.connect(self._on_transcribe_models_loaded)
         self._codex_models_loaded.connect(self._on_codex_models_loaded)
         self._opencode_models_loaded.connect(self._on_opencode_models_loaded)
+        self._cheaperinference_models_loaded.connect(
+            self._on_cheaperinference_models_loaded)
         self._requesty_models_loaded.connect(self._on_requesty_models_loaded)
         self._custom_models_loaded.connect(self._on_custom_models_loaded)
         self._agy_models_loaded.connect(self._on_agy_models_loaded)
@@ -1491,6 +1500,10 @@ class SettingsWindow(QDialog):
         self.requesty_key = self._key_row(
             keys_form, "requesty", t("(falls back to REQUESTY_API_KEY)"),
             self._test_requesty)
+        self.cheaperinference_key = self._key_row(
+            keys_form, "cheaperinference",
+            t("(falls back to CHEAPERINFERENCE_API_KEY)"),
+            self._test_cheaperinference, service="Cheaper Inference")
         # The one provider whose address is not known in advance, so it is the
         # one with an address field; the others keep theirs in the config.
         self.custom_url = QLineEdit()
@@ -1691,6 +1704,19 @@ class SettingsWindow(QDialog):
         self.cleanup_requesty_model_row = self._row(self.cleanup_requesty_model,
                                                     self.refresh_requesty_models)
         orr_form.addRow(t("Model"), self.cleanup_requesty_model_row)
+
+        self.cleanup_cheaperinference_model = QComboBox()
+        self.cleanup_cheaperinference_model.setEditable(True)
+        self.cleanup_cheaperinference_model.addItems(CHEAPERINFERENCE_MODELS)
+        self.cleanup_cheaperinference_model.setToolTip(
+            _typed_model_note("Cheaper Inference"))
+        self.refresh_cheaperinference_models = QPushButton(t("Fetch model list"))
+        self.refresh_cheaperinference_models.clicked.connect(
+            self._load_cheaperinference_models)
+        self.cleanup_cheaperinference_model_row = self._row(
+            self.cleanup_cheaperinference_model,
+            self.refresh_cheaperinference_models)
+        orr_form.addRow(t("Model"), self.cleanup_cheaperinference_model_row)
 
         self.cleanup_custom_model = QComboBox()
         self.cleanup_custom_model.setEditable(True)
@@ -1998,6 +2024,25 @@ class SettingsWindow(QDialog):
         rq_note.setWordWrap(True)
         rq_form.addRow(rq_note)
         layout.addWidget(self.requesty_box)
+
+        self.cheaperinference_box = QGroupBox("Cheaper Inference")
+        ci_form = QFormLayout(self.cheaperinference_box)
+        ci_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.assistant_cheaperinference_model = QComboBox()
+        self.assistant_cheaperinference_model.setEditable(True)
+        self.assistant_cheaperinference_model.addItems(CHEAPERINFERENCE_MODELS)
+        ci_form.addRow(t("Model"), self.assistant_cheaperinference_model)
+        ci_note = QLabel(t(
+            "A plain question and a plain answer, over the Cheaper Inference key you "
+            "already have. It runs no commands, opens no files and reaches none of your "
+            "services, so it can tell you what the capital of Peru is but not what is "
+            "in your calendar. Working directory and permissions above mean nothing "
+            "here."
+        ))
+        ci_note.setWordWrap(True)
+        ci_form.addRow(ci_note)
+        layout.addWidget(self.cheaperinference_box)
 
         thread = QGroupBox(t("The conversation"))
         thread_form = QFormLayout(thread)
@@ -2585,6 +2630,7 @@ class SettingsWindow(QDialog):
         self.gemini_key.setText(conf["gemini_api_key"])
         self.deepseek_key.setText(conf["deepseek_api_key"])
         self.opencode_key.setText(conf["opencode_api_key"])
+        self.cheaperinference_key.setText(conf["cheaperinference_api_key"])
         self.custom_url.setText(conf["custom_base_url"])
         self._shown_provider = ""
         self._select_data(self.transcribe_provider, conf["transcribe_provider"])
@@ -2632,6 +2678,8 @@ class SettingsWindow(QDialog):
         )
         self.cleanup_opencode_model.setCurrentText(conf["cleanup_opencode_model"])
         self.cleanup_requesty_model.setCurrentText(conf["cleanup_requesty_model"])
+        self.cleanup_cheaperinference_model.setCurrentText(
+            conf["cleanup_cheaperinference_model"])
         self.cleanup_custom_model.setCurrentText(conf["cleanup_custom_model"])
         self._select_data(self.cleanup_provider, conf["cleanup_provider"])
         self._cleanup_provider_changed()  # selecting index 0 fires no signal
@@ -2670,6 +2718,8 @@ class SettingsWindow(QDialog):
         self.assistant_agy_model.setCurrentText(conf["assistant_agy_model"])
         self.assistant_opencode_model.setCurrentText(conf["assistant_opencode_model"])
         self.assistant_requesty_model.setCurrentText(conf["assistant_requesty_model"])
+        self.assistant_cheaperinference_model.setCurrentText(
+            conf["assistant_cheaperinference_model"])
         self._assistant_provider_changed()  # selecting index 0 fires no signal
         self._select_data(self.assistant_reasoning, conf["assistant_reasoning"])
         self.assistant_dir.setText(conf["assistant_dir"])
@@ -2755,6 +2805,7 @@ class SettingsWindow(QDialog):
         conf["gemini_api_key"] = self.gemini_key.text().strip()
         conf["deepseek_api_key"] = self.deepseek_key.text().strip()
         conf["opencode_api_key"] = self.opencode_key.text().strip()
+        conf["cheaperinference_api_key"] = self.cheaperinference_key.text().strip()
         conf["custom_base_url"] = self.custom_url.text().strip()
         conf["local_binary"] = self.local_whisper.custom_binary
         conf["local_llm_binary"] = self.local_llm.custom_binary
@@ -2795,6 +2846,10 @@ class SettingsWindow(QDialog):
         conf["cleanup_requesty_model"] = (
             self.cleanup_requesty_model.currentText().strip()
             or cfg.DEFAULTS["cleanup_requesty_model"]
+        )
+        conf["cleanup_cheaperinference_model"] = (
+            self.cleanup_cheaperinference_model.currentText().strip()
+            or cfg.DEFAULTS["cleanup_cheaperinference_model"]
         )
         # Empty is a choice here rather than a field left blank: the server's
         # own model.
@@ -2850,6 +2905,10 @@ class SettingsWindow(QDialog):
         conf["assistant_requesty_model"] = (
             self.assistant_requesty_model.currentText().strip()
             or cfg.DEFAULTS["assistant_requesty_model"]
+        )
+        conf["assistant_cheaperinference_model"] = (
+            self.assistant_cheaperinference_model.currentText().strip()
+            or cfg.DEFAULTS["assistant_cheaperinference_model"]
         )
         conf["assistant_reasoning"] = self.assistant_reasoning.currentData() or ""
         conf["assistant_dir"] = self.assistant_dir.text().strip()
@@ -3238,6 +3297,37 @@ class SettingsWindow(QDialog):
             combo.addItems(models)
             combo.setCurrentText(current)
 
+    def _load_cheaperinference_models(self):
+        self.refresh_cheaperinference_models.setEnabled(False)
+        self.models_label.setText(t("Fetching model list…"))
+        key, base = self._typed_key("cheaperinference")
+
+        def work():
+            try:
+                self._cheaperinference_models_loaded.emit(
+                    api.openai_models(key, base, "Cheaper Inference"), "")
+            except api.ApiError as exc:
+                self._cheaperinference_models_loaded.emit([], str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_cheaperinference_models_loaded(self, models, error):
+        self.refresh_cheaperinference_models.setEnabled(True)
+        if error:
+            self.models_label.setText(t("Could not fetch the list: {error}", error=error))
+            return
+        self._fill_cheaperinference_boxes(models)
+        self.models_label.setText(t("{count} models loaded.", count=len(models)))
+
+    def _fill_cheaperinference_boxes(self, models):
+        # The same arrangement as OpenCode Go: one key, one catalog, two boxes.
+        for combo in (self.cleanup_cheaperinference_model,
+                      self.assistant_cheaperinference_model):
+            current = combo.currentText()
+            combo.clear()
+            combo.addItems(models)
+            combo.setCurrentText(current)
+
     def _load_requesty_models(self):
         self.refresh_requesty_models.setEnabled(False)
         self.models_label.setText(t("Fetching model list…"))
@@ -3350,6 +3440,13 @@ class SettingsWindow(QDialog):
             jobs.append(("opencode",
                          lambda: api.openai_models(opencode_key, opencode_base,
                                                    "OpenCode Go")))
+        cheaperinference_key = self.conf.cheaperinference_key()
+        cheaperinference_base = self.conf["cheaperinference_base_url"]
+        if cheaperinference_key:
+            jobs.append(("cheaperinference",
+                         lambda: api.openai_models(cheaperinference_key,
+                                                   cheaperinference_base,
+                                                   "Cheaper Inference")))
         requesty_key = self.conf.requesty_key()
         requesty_base = self.conf["requesty_base_url"]
         if requesty_key:
@@ -3369,6 +3466,9 @@ class SettingsWindow(QDialog):
     def _on_hosted_models_loaded(self, provider, models):
         if provider == "opencode":
             self._fill_opencode_boxes(models)
+            return
+        if provider == "cheaperinference":
+            self._fill_cheaperinference_boxes(models)
             return
         if provider == "deepseek":
             current = self.cleanup_deepseek_model.currentText()
@@ -3424,6 +3524,13 @@ class SettingsWindow(QDialog):
         self._test_key("opencode", lambda: t(
             "Connection works. {count} models visible.",
             count=len(api.openai_models(key, base, "OpenCode Go")),
+        ))
+
+    def _test_cheaperinference(self):
+        key, base = self._typed_key("cheaperinference")
+        self._test_key("cheaperinference", lambda: t(
+            "Connection works. {count} models visible.",
+            count=len(api.openai_models(key, base, "Cheaper Inference")),
         ))
 
     def _test_requesty(self):
@@ -3693,6 +3800,8 @@ class SettingsWindow(QDialog):
                                         provider == "opencode")
         self.cleanup_form.setRowVisible(self.cleanup_requesty_model_row,
                                         provider == "requesty")
+        self.cleanup_form.setRowVisible(self.cleanup_cheaperinference_model_row,
+                                        provider == "cheaperinference")
         self.cleanup_form.setRowVisible(self.cleanup_custom_model_row,
                                         provider == "custom")
         self.cleanup_form.setRowVisible(self.cleanup_agy_model,
@@ -3715,6 +3824,8 @@ class SettingsWindow(QDialog):
             self.models_label.setText(t("Runs on DeepSeek."))
         elif provider == "requesty":
             self.models_label.setText(t("Runs on Requesty."))
+        elif provider == "cheaperinference":
+            self.models_label.setText(t("Runs on Cheaper Inference."))
         elif provider == "custom":
             self.models_label.setText(t("Runs on your custom server."))
         elif not binary:
@@ -3736,6 +3847,7 @@ class SettingsWindow(QDialog):
         self.agy_box.setVisible(provider == "agy")
         self.opencode_box.setVisible(provider == "opencode")
         self.requesty_box.setVisible(provider == "requesty")
+        self.cheaperinference_box.setVisible(provider == "cheaperinference")
         self._refresh_assistant_status()
 
     def _refresh_assistant_status(self):
@@ -3750,6 +3862,10 @@ class SettingsWindow(QDialog):
             elif provider == "requesty":
                 self.assistant_found.setText(
                     t("Needs no program installed, only a Requesty key.")
+                )
+            elif provider == "cheaperinference":
+                self.assistant_found.setText(
+                    t("Needs no program installed, only a Cheaper Inference key.")
                 )
             else:
                 self.assistant_found.setText(

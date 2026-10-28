@@ -489,6 +489,8 @@ class HomeWindow(QWidget):
             return bool(shutil.which(binary))
         if provider == "requesty":
             return bool(self.conf.requesty_key())
+        if provider == "cheaperinference":
+            return bool(self.conf.cheaperinference_key())
         return bool(self.conf.opencode_key() if provider == "opencode" else self.conf.openrouter_key())
 
     def _capture(self):

@@ -220,7 +220,9 @@ def cmd_ask(opts):
                "openrouter": "assistant_openrouter_model",
                "agy": "assistant_agy_model",
                "opencode": "assistant_opencode_model",
-               "requesty": "assistant_requesty_model"}[assistant.provider(conf)]
+               "requesty": "assistant_requesty_model",
+               "cheaperinference": "assistant_cheaperinference_model",
+               }[assistant.provider(conf)]
         conf[key] = opts.model
     if opts.dir:
         conf["assistant_dir"] = opts.dir
@@ -532,7 +534,7 @@ def cmd_history_clear(opts):
 
 SECRET_KEYS = ("openai_api_key", "groq_api_key", "openrouter_api_key",
                "gemini_api_key", "deepseek_api_key", "opencode_api_key", "requesty_api_key",
-               "custom_api_key")
+               "cheaperinference_api_key", "custom_api_key")
 
 
 def _mask(key, value):
@@ -780,6 +782,17 @@ def cmd_test_key(opts):
                                    "message": f"connection works, {count} models visible"}
         except api.ApiError as exc:
             results["opencode"] = {"ok": False, "message": str(exc)}
+    if opts.which in ("cheaperinference", "all"):
+        try:
+            count = len(api.openai_models(conf.cheaperinference_key(),
+                                          conf["cheaperinference_base_url"],
+                                          "Cheaper Inference"))
+            results["cheaperinference"] = {
+                "ok": True,
+                "message": f"connection works, {count} models visible",
+            }
+        except api.ApiError as exc:
+            results["cheaperinference"] = {"ok": False, "message": str(exc)}
     everything_ok = all(item["ok"] for item in results.values())
     lines = [f"{'✓' if item['ok'] else '✗'} {name}: {item['message']}"
              for name, item in results.items()]
@@ -1026,6 +1039,7 @@ def cmd_doctor(opts):
         "gemini": ("Google AI Studio", conf.gemini_key()),
         "deepseek": ("DeepSeek", conf.deepseek_key()),
         "opencode": ("OpenCode Go", conf.opencode_key()),
+        "cheaperinference": ("Cheaper Inference", conf.cheaperinference_key()),
         "requesty": ("Requesty", conf.requesty_key()),
     }.get(cleaner, ("", ""))
     if cleanup_service:
@@ -1321,7 +1335,7 @@ def build_parser():
     test = leaf(subs, "test-key", "check the API keys")
     test.add_argument("which", nargs="?", default="all",
                       choices=("all", *cfg.TRANSCRIBERS, "gemini", "deepseek",
-                               "opencode"))
+                               "opencode", "cheaperinference"))
     test.set_defaults(func=cmd_test_key)
     leaf(subs, "doctor", "keys, programs, and what is missing").set_defaults(func=cmd_doctor)
 

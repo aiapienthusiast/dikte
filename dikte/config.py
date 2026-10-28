@@ -438,6 +438,8 @@ DEFAULTS = {
     "deepseek_base_url": "https://api.deepseek.com",
     "opencode_api_key": "",
     "opencode_base_url": "https://opencode.ai/zen/go/v1",
+    "cheaperinference_api_key": "",
+    "cheaperinference_base_url": "https://api.cheaperinference.com/v1",
     # A server of the user's own that speaks OpenAI's API: whisper or a chat
     # model behind /audio/transcriptions and /chat/completions. No address
     # ships with it, and the key is optional because a server on the same
@@ -484,6 +486,7 @@ DEFAULTS = {
     "cleanup_deepseek_model": "deepseek-flash",
     "cleanup_agy_model": "",           # empty -> whatever Antigravity is set to
     "cleanup_opencode_model": "deepseek-v4-flash",
+    "cleanup_cheaperinference_model": "gpt-5.4-mini",
     "cleanup_requesty_model": "google/gemini-3.5-flash-lite",
     "cleanup_custom_model": "",     # empty -> whatever the server serves
     "cleanup_reasoning": "",        # empty -> whatever the model does by default
@@ -584,6 +587,7 @@ DEFAULTS = {
     "assistant_openrouter_model": "google/gemini-3.5-flash",
     "assistant_agy_model": "",      # empty -> whatever Antigravity is set to
     "assistant_opencode_model": "deepseek-v4-flash",
+    "assistant_cheaperinference_model": "gpt-5.4-mini",
     "assistant_requesty_model": "google/gemini-3.5-flash",
     "assistant_reasoning": "",      # empty -> the model's own default
     "assistant_dir": "",            # empty -> the home directory
@@ -759,6 +763,9 @@ class Config:
 
     def opencode_key(self):
         return self.api_key("opencode_api_key")
+
+    def cheaperinference_key(self):
+        return self.api_key("cheaperinference_api_key")
 
     def requesty_key(self):
         return self.api_key("requesty_api_key")

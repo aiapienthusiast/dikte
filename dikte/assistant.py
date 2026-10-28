@@ -1,6 +1,6 @@
 """Handing a dictation to an agent as a command, and pasting back its answer.
 
-Six of them, because not everyone has the same one installed:
+Seven of them, because not everyone has the same one installed:
 
   Claude Code   `claude -p`, the session you would have opened yourself
   Codex         `codex exec`, the same idea from the other shop
@@ -8,6 +8,8 @@ Six of them, because not everyone has the same one installed:
   OpenRouter    a plain chat request, over the key that is already configured
   OpenCode Go   a plain chat request, over a subscription to open coding models
   Requesty      a plain chat request, the same as OpenRouter's
+  Cheaper Inference
+                a plain chat request, over an OpenAI-compatible gateway
 
 The first three are the whole machine: they run commands, read files, and reach
 whatever skills and services you have connected, which is what makes "put that
@@ -46,13 +48,14 @@ from . import paths
 from .i18n import t
 
 SESSION_FILE = cfg.DATA_DIR / "assistant.json"
-PROVIDERS = ("claude", "codex", "agy", "openrouter", "opencode", "requesty")
+PROVIDERS = ("claude", "codex", "agy", "openrouter", "opencode", "requesty",
+             "cheaperinference")
 
 # What each one is called where a person reads it: the tray, the corner of
 # the screen, and the line an error is written in.
 SERVICES = {"claude": "Claude", "codex": "Codex", "agy": "Antigravity",
             "openrouter": "OpenRouter", "opencode": "OpenCode Go",
-            "requesty": "Requesty"}
+            "requesty": "Requesty", "cheaperinference": "Cheaper Inference"}
 
 # How many messages of a chat provider's conversation are carried forward. The
 # two CLIs keep their own history and need no such number; here every turn is
@@ -165,6 +168,8 @@ def model(conf):
         return conf["assistant_opencode_model"]
     if name == "requesty":
         return conf["assistant_requesty_model"]
+    if name == "cheaperinference":
+        return conf["assistant_cheaperinference_model"]
     return conf["assistant_model"]
 
 
@@ -260,7 +265,7 @@ def ask(prompt, conf, on_stage=None, should_stop=None):
     one, and only the denial explains why it did not do what it was asked to.
     """
     name = provider(conf)
-    if name in ("openrouter", "opencode", "requesty"):
+    if name in ("openrouter", "opencode", "requesty", "cheaperinference"):
         return _ask_chat(name, SERVICES[name], prompt, conf, on_stage)
 
     binary = executable(name)
@@ -520,7 +525,7 @@ def agy_models():
     return ids
 
 
-# --- OpenRouter, OpenCode Go and Requesty ---------------------------------
+# --- OpenRouter, OpenCode Go, Requesty and Cheaper Inference --------------
 
 def _ask_chat(name, service, prompt, conf, on_stage):
     """A plain question and answer, over a chat provider's key.

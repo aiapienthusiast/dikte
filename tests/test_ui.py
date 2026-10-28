@@ -70,6 +70,7 @@ CHANGED = {
     "gemini_api_key": "AIza-test-key",
     "deepseek_api_key": "sk-deepseek-test-key",
     "requesty_api_key": "rqsty-test-key",
+    "cheaperinference_api_key": "cheaperinference-test-key",
     "transcribe_provider": "openrouter",
     "transcribe_model": "whisper-1",
     "groq_transcribe_model": "whisper-large-v3",
@@ -84,6 +85,7 @@ CHANGED = {
     "cleanup_deepseek_model": "deepseek-v4-pro",
     "cleanup_agy_model": "gemini-3.1-pro-low",
     "cleanup_requesty_model": "gpt-5.4-mini",
+    "cleanup_cheaperinference_model": "deepseek-v4-flash",
     "cleanup_reasoning": "high",
     "local_model": "ggml-small.bin",
     "local_gpu": False,
@@ -108,6 +110,7 @@ CHANGED = {
     "assistant_openrouter_model": "some/agent-model",
     "assistant_agy_model": "gemini-3.1-pro-low",
     "assistant_requesty_model": "deepseek-v4-flash",
+    "assistant_cheaperinference_model": "glm-5.3",
     "assistant_reasoning": "high",
     "assistant_dir": "/tmp",
     "assistant_timeout": 600,
@@ -390,6 +393,7 @@ class Settings(DikteTest):
         boxes = {"openrouter": window.cleanup_model_row,
                  "opencode": window.cleanup_opencode_model_row,
                  "requesty": window.cleanup_requesty_model_row,
+                 "cheaperinference": window.cleanup_cheaperinference_model_row,
                  "claude": window.cleanup_claude_model,
                  "deepseek": window.cleanup_deepseek_model_row,
                  "codex": window.cleanup_codex_model}
@@ -426,6 +430,7 @@ class Settings(DikteTest):
             window.cleanup_deepseek_model,
             window.cleanup_opencode_model,
             window.cleanup_requesty_model,
+            window.cleanup_cheaperinference_model,
             window.cleanup_agy_model,
             window.cleanup_claude_model,
             window.cleanup_codex_model,
@@ -433,6 +438,7 @@ class Settings(DikteTest):
             window.assistant_agy_model,
             window.assistant_opencode_model,
             window.assistant_requesty_model,
+            window.assistant_cheaperinference_model,
             window.assistant_codex_model,
             window.assistant_openrouter_model,
             window.meeting_model,
@@ -532,6 +538,35 @@ class Settings(DikteTest):
         self.assertTrue(window.openrouter_box.isHidden())
         self.assertTrue(window.opencode_box.isHidden())
 
+    def test_cheaper_inference_answering_refills_both_of_its_boxes(self):
+        conf = self.config(cleanup_cheaperinference_model="my-own-model")
+        window = self.window(conf)
+        window._on_cheaperinference_models_loaded(["gpt-5.4-mini", "glm-5.3"], "")
+        for combo in (window.cleanup_cheaperinference_model,
+                      window.assistant_cheaperinference_model):
+            with self.subTest(combo=combo.objectName() or "combo"):
+                offered = [combo.itemText(i) for i in range(combo.count())]
+                self.assertEqual(offered, ["gpt-5.4-mini", "glm-5.3"])
+        self.assertEqual(window.cleanup_cheaperinference_model.currentText(),
+                         "my-own-model")
+
+    def test_cheaper_inference_s_list_arriving_at_open_leaves_the_other_boxes_alone(self):
+        window = self.window(self.config(cleanup_cheaperinference_model="my-own-model"))
+        before = window.cleanup_model.count()
+        window._on_hosted_models_loaded("cheaperinference", ["gpt-5.4-mini"])
+        combo = window.cleanup_cheaperinference_model
+        self.assertEqual([combo.itemText(i) for i in range(combo.count())],
+                         ["gpt-5.4-mini"])
+        self.assertEqual(combo.currentText(), "my-own-model")
+        self.assertEqual(window.cleanup_model.count(), before)
+
+    def test_cheaper_inference_agent_shows_its_own_box(self):
+        window = self.window(cfg.Config())
+        window._select_data(window.assistant_provider, "cheaperinference")
+        self.assertFalse(window.cheaperinference_box.isHidden())
+        self.assertTrue(window.openrouter_box.isHidden())
+        self.assertTrue(window.requesty_box.isHidden())
+
     def test_agy_answering_refills_both_of_its_boxes(self):
         """The same arrangement as Codex: both boxes, nothing chosen is lost."""
         conf = self.config(cleanup_agy_model="my-own-model")
@@ -577,10 +612,11 @@ class Settings(DikteTest):
                                          gemini_api_key="AIza-x",
                                          deepseek_api_key="sk-deepseek-x",
                                          opencode_api_key="opencode-x",
-                                         requesty_api_key="rqsty-x"))
+                                         requesty_api_key="rqsty-x",
+                                         cheaperinference_api_key="cheaperinference-x"))
         with mock.patch.object(settings_ui.threading, "Thread") as thread:
             REAL_LOAD_HOSTED_MODELS(window)
-        self.assertEqual(thread.call_count, 5)
+        self.assertEqual(thread.call_count, 6)
 
     def test_the_update_line_names_the_version_that_is_running(self):
         window = self.window(cfg.Config())

@@ -101,6 +101,7 @@ class Provider(DikteTest):
         self.assertEqual(assistant.executable("openrouter"), "")
         self.assertEqual(assistant.executable("opencode"), "")
         self.assertEqual(assistant.executable("requesty"), "")
+        self.assertEqual(assistant.executable("cheaperinference"), "")
 
     def test_the_model_recorded_is_the_one_that_answered(self):
         """The history used to write Claude's setting whoever had answered."""
@@ -122,7 +123,8 @@ class Provider(DikteTest):
         for name, called in (("codex", "Codex"), ("agy", "Antigravity"),
                              ("openrouter", "OpenRouter"),
                              ("opencode", "OpenCode Go"),
-                             ("requesty", "Requesty")):
+                             ("requesty", "Requesty"),
+                             ("cheaperinference", "Cheaper Inference")):
             with self.subTest(name=name):
                 self.assertEqual(
                     assistant.display_name(self.config(assistant_provider=name)),
@@ -771,6 +773,41 @@ class AskOpenCode(DikteTest):
 
     def test_an_api_failure_reads_as_an_assistant_failure(self):
         conf = self.config(assistant_provider="opencode")
+        with self.assertRaises(assistant.AssistantError):
+            assistant.ask("when is it", conf)
+
+
+class AskCheaperInference(DikteTest):
+    def test_a_question_and_an_answer(self):
+        conf = self.config(assistant_provider="cheaperinference",
+                           cheaperinference_api_key="cheaperinference-test-key")
+        with fake_urlopen({"choices": [{"message": {"content": "on Thursday"}}]}):
+            answer, warning = assistant.ask("when is it", conf)
+        self.assertEqual(answer, "on Thursday")
+        self.assertEqual(warning, "")
+
+    def test_the_conversation_is_ours_to_keep(self):
+        conf = self.config(assistant_provider="cheaperinference",
+                           cheaperinference_api_key="cheaperinference-test-key")
+        with fake_urlopen({"choices": [{"message": {"content": "on Thursday"}}]}):
+            assistant.ask("when is it", conf)
+        stored = assistant.read_messages("cheaperinference", 1800)
+        self.assertEqual([row["content"] for row in stored],
+                         ["when is it", "on Thursday"])
+
+    def test_the_model_and_endpoint_are_its_own(self):
+        conf = self.config(assistant_provider="cheaperinference",
+                           cheaperinference_api_key="cheaperinference-test-key",
+                           assistant_cheaperinference_model="deepseek-v4-flash")
+        with fake_urlopen({"choices": [{"message": {"content": "on Thursday"}}]}) as calls:
+            assistant.ask("when is it", conf)
+        sent = json.loads(calls[0].data.decode("utf-8"))
+        self.assertEqual(sent["model"], "deepseek-v4-flash")
+        self.assertIn("https://api.cheaperinference.com/v1/chat/completions",
+                      calls[0].full_url)
+
+    def test_an_api_failure_reads_as_an_assistant_failure(self):
+        conf = self.config(assistant_provider="cheaperinference")
         with self.assertRaises(assistant.AssistantError):
             assistant.ask("when is it", conf)
 

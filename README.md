@@ -123,12 +123,12 @@ paste the raw transcript.
 | Task | Hosted providers | Other options |
 | --- | --- | --- |
 | Speech to text | OpenAI, Groq, OpenRouter, Requesty, any OpenAI-compatible server | Local model |
-| Cleanup | OpenRouter, Requesty, Google AI Studio, DeepSeek, OpenCode Go, any OpenAI-compatible server | Local model; Claude Code, Codex or Antigravity CLI |
+| Cleanup | OpenRouter, Requesty, Google AI Studio, DeepSeek, OpenCode Go, Cheaper Inference, any OpenAI-compatible server | Local model; Claude Code, Codex or Antigravity CLI |
 
 Choose models and cleanup reasoning effort in Settings. API keys can be entered
 there too; empty keys fall back to `OPENAI_API_KEY`, `GROQ_API_KEY`,
-`OPENROUTER_API_KEY`, `REQUESTY_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`
-and `OPENCODE_API_KEY`.
+`OPENROUTER_API_KEY`, `REQUESTY_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`,
+`OPENCODE_API_KEY` and `CHEAPERINFERENCE_API_KEY`.
 
 Settings and any keys entered in the app are saved in `config.json`: under
 `~/.config/dikte` on Linux (or `$XDG_CONFIG_HOME/dikte` when set),
@@ -209,8 +209,8 @@ running.
   a thing you can say to a window that is not Claude. Codex (`codex exec`) and
   Antigravity (`agy -p`) run the same way, though Antigravity takes neither a
   permission mode nor a sandbox from Dikte: what it may do without asking is
-  whatever its own allow-rules say. OpenRouter, OpenCode Go or Requesty is
-  there as a
+  whatever its own allow-rules say. OpenRouter, OpenCode Go, Requesty or
+  Cheaper Inference is there as a
   plain question-and-answer fallback for a machine with no CLI on it. Provider,
   model, permissions and working directory are under Settings → Agent, and
   commands close together stay in one conversation.

@@ -206,6 +206,10 @@ class Keys(DikteTest):
             self.assertEqual(cfg.Config().opencode_key(), "opencode-env")
         with mock.patch.dict(os.environ, {"REQUESTY_API_KEY": "rqsty-env"}):
             self.assertEqual(cfg.Config().requesty_key(), "rqsty-env")
+        with mock.patch.dict(os.environ,
+                             {"CHEAPERINFERENCE_API_KEY": "cheaperinference-env"}):
+            self.assertEqual(cfg.Config().cheaperinference_key(),
+                             "cheaperinference-env")
 
 
 class TranscribeTarget(DikteTest):
@@ -650,6 +654,7 @@ class Defaults(unittest.TestCase):
         self.assertEqual(cfg.DEFAULTS["deepseek_api_key"], "")
         self.assertEqual(cfg.DEFAULTS["opencode_api_key"], "")
         self.assertEqual(cfg.DEFAULTS["requesty_api_key"], "")
+        self.assertEqual(cfg.DEFAULTS["cheaperinference_api_key"], "")
 
     def test_google_ai_studio_is_a_cleanup_provider_and_not_a_transcriber(self):
         """Its compatible endpoint has no /audio/transcriptions behind it."""
@@ -668,6 +673,15 @@ class Defaults(unittest.TestCase):
                          "https://opencode.ai/zen/go/v1")
         self.assertEqual(cfg.DEFAULTS["cleanup_opencode_model"], "deepseek-v4-flash")
         self.assertEqual(cfg.DEFAULTS["assistant_opencode_model"], "deepseek-v4-flash")
+
+    def test_cheaper_inference_is_a_cleanup_provider_and_not_a_transcriber(self):
+        self.assertNotIn("cheaperinference", cfg.TRANSCRIBERS)
+        self.assertIn("cheaperinference", cleanup.PROVIDERS)
+        self.assertEqual(cfg.DEFAULTS["cheaperinference_base_url"],
+                         "https://api.cheaperinference.com/v1")
+        self.assertEqual(cfg.DEFAULTS["cleanup_cheaperinference_model"], "gpt-5.4-mini")
+        self.assertEqual(cfg.DEFAULTS["assistant_cheaperinference_model"],
+                         "gpt-5.4-mini")
 
     def test_requesty_ships_on_its_own_endpoint_and_is_never_the_default(self):
         self.assertEqual(cfg.DEFAULTS["requesty_base_url"],

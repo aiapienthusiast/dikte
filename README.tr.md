@@ -119,12 +119,13 @@ Temizlemeyi kapatırsan ham transkript yapıştırılır.
 | İşlem | Bulut sağlayıcıları | Diğer seçenekler |
 | --- | --- | --- |
 | Sesi yazıya çevirme | OpenAI, Groq, OpenRouter, Requesty, OpenAI uyumlu herhangi bir sunucu | Yerel model |
-| Temizleme | OpenRouter, Requesty, Google AI Studio, DeepSeek, OpenCode Go, OpenAI uyumlu herhangi bir sunucu | Yerel model; Claude Code, Codex veya Antigravity CLI |
+| Temizleme | OpenRouter, Requesty, Google AI Studio, DeepSeek, OpenCode Go, Cheaper Inference, OpenAI uyumlu herhangi bir sunucu | Yerel model; Claude Code, Codex veya Antigravity CLI |
 
 Modelleri ve temizleme için düşünme seviyesini Ayarlar'dan seçebilirsin. API
 anahtarlarını da buraya girebilirsin; boş bırakılan anahtarlar için
 `OPENAI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `REQUESTY_API_KEY`,
-`GEMINI_API_KEY`, `DEEPSEEK_API_KEY` ve `OPENCODE_API_KEY` kullanılır.
+`GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENCODE_API_KEY` ve
+`CHEAPERINFERENCE_API_KEY` kullanılır.
 
 Ayarlar ve uygulamaya girdiğin anahtarlar `config.json` dosyasına kaydedilir:
 Linux'ta `~/.config/dikte` (tanımlıysa `$XDG_CONFIG_HOME/dikte`), macOS'ta
@@ -204,8 +205,8 @@ olmasını ister.
   olmanı sağlayan da budur. Codex (`codex exec`) ile Antigravity (`agy -p`) da
   aynı şekilde çalışır; ama Antigravity'ye Dikte bir izin kipi ya da sandbox
   veremiyor, sormadan ne yapabileceğini kendi allow-rule'ları belirliyor.
-  OpenRouter, OpenCode Go ya da Requesty ise hiçbiri kurulu olmayan bir
-  makinede düz soru
+  OpenRouter, OpenCode Go, Requesty ya da Cheaper Inference ise hiçbiri kurulu
+  olmayan bir makinede düz soru
   cevap için duruyor. Sağlayıcı, model, izinler ve çalışma dizini Ayarlar → Ajan
   sekmesinde; arka arkaya verilen komutlar tek bir konuşmada kalır.
 - **Toplantılar** mikrofonla hoparlör çıkışından aynı anda kaydedilir; kimin ne

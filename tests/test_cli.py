@@ -560,6 +560,19 @@ class Providers(DikteTest):
         self.assertEqual(code, 0)
         self.assertIn("opencode: connection works, 1 models visible", out)
 
+    def test_cheaper_inference_is_a_choice_and_reports_under_its_own_name(self):
+        parser = cli.build_parser()
+        self.assertEqual(
+            parser.parse_args(["test-key", "cheaperinference"]).which,
+            "cheaperinference")
+        self.write_config({"cheaperinference_api_key": "cheaperinference-test"})
+        with fake_urlopen({"data": [{"id": "gpt-5.4-mini"}]}) as calls:
+            code, out, _ = self.run_cmd(cli.cmd_test_key, which="cheaperinference")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0].full_url,
+                         "https://api.cheaperinference.com/v1/models")
+        self.assertIn("cheaperinference: connection works, 1 models visible", out)
+
     def test_deepseek_is_a_choice_and_reports_under_its_own_name(self):
         parser = cli.build_parser()
         self.assertEqual(
@@ -670,6 +683,16 @@ class Doctor(DikteTest):
                       self.run_doctor(as_json=False, cleanup_provider="opencode",
                                       cleanup_opencode_model="glm-5.3"))
 
+    def test_cleanup_on_cheaper_inference_is_a_question_about_its_own_key(self):
+        reply = self.run_doctor(cleanup_provider="cheaperinference",
+                                cleanup_cheaperinference_model="gpt-5.4-mini")
+        self.assertEqual(reply["cleanup"]["provider"], "cheaperinference")
+        self.assertEqual(reply["cleanup"]["model"], "gpt-5.4-mini")
+        self.assertIn("Cheaper Inference key, cleaning up on gpt-5.4-mini",
+                      self.run_doctor(as_json=False,
+                                      cleanup_provider="cheaperinference",
+                                      cleanup_cheaperinference_model="gpt-5.4-mini"))
+
     def test_cleanup_on_deepseek_is_a_question_about_its_own_key(self):
         reply = self.run_doctor(cleanup_provider="deepseek",
                                 cleanup_deepseek_model="deepseek-flash")
@@ -745,7 +768,7 @@ class Doctor(DikteTest):
                                       cleanup_codex_model="gpt-5.4"))
 
     def test_agent_on_hosted_provider_does_not_ask_for_a_cli_program(self):
-        for provider in ("openrouter", "opencode", "requesty"):
+        for provider in ("openrouter", "opencode", "requesty", "cheaperinference"):
             with self.subTest(provider=provider):
                 reply = self.run_doctor(assistant_provider=provider)
                 self.assertEqual(reply["agent"]["provider"], provider)

@@ -44,11 +44,13 @@ _TR_CASES = {
         "Claude": "Claude'a", "Codex": "Codex'e", "OpenRouter": "OpenRouter'a",
         "Google AI Studio": "Google AI Studio'ya", "DeepSeek": "DeepSeek'e",
         "Antigravity": "Antigravity'ye", "OpenCode Go": "OpenCode Go'ya", "Requesty": "Requesty'ye",
+        "Cheaper Inference": "Cheaper Inference'a",
     },
     "accusative": {
         "Claude": "Claude'u", "Codex": "Codex'i", "OpenRouter": "OpenRouter'ı",
         "Google AI Studio": "Google AI Studio'yu", "DeepSeek": "DeepSeek'i",
         "Antigravity": "Antigravity'yi", "OpenCode Go": "OpenCode Go'yu", "Requesty": "Requesty'yi",
+        "Cheaper Inference": "Cheaper Inference'ı",
     },
 }
 
@@ -334,6 +336,8 @@ TR = {
     "(falls back to DEEPSEEK_API_KEY)": "(boşsa DEEPSEEK_API_KEY kullanılır)",
     "(falls back to OPENCODE_API_KEY)": "(boşsa OPENCODE_API_KEY kullanılır)",
     "(falls back to REQUESTY_API_KEY)": "(boşsa REQUESTY_API_KEY kullanılır)",
+    "(falls back to CHEAPERINFERENCE_API_KEY)":
+        "(boşsa CHEAPERINFERENCE_API_KEY kullanılır)",
     "Custom server": "Özel sunucu",
     "Custom server address": "Özel sunucu adresi",
     "OpenAI-compatible, e.g. http://localhost:8000/v1":
@@ -348,6 +352,7 @@ TR = {
     "Runs on DeepSeek.": "DeepSeek üzerinde çalışır.",
     "Runs on OpenCode Go.": "OpenCode Go üzerinde çalışır.",
     "Runs on Requesty.": "Requesty üzerinde çalışır.",
+    "Runs on Cheaper Inference.": "Cheaper Inference üzerinde çalışır.",
     "Runs on your custom server.": "Özel sunucunda çalışır.",
     "Connection works. {count} audio models visible.":
         "Bağlantı tamam. {count} ses modeli görünüyor.",
@@ -675,6 +680,18 @@ TR = {
         "Yukarıdaki çalışma dizini ve izinler burada bir şey ifade etmez.",
     "Needs no program installed, only an OpenCode Go key.":
         "Kurulu bir programa değil, yalnızca bir OpenCode Go anahtarına ihtiyaç duyar.",
+    "A plain question and a plain answer, over the Cheaper Inference key you "
+    "already have. It runs no commands, opens no files and reaches none of your "
+    "services, so it can tell you what the capital of Peru is but not what is "
+    "in your calendar. Working directory and permissions above mean nothing "
+    "here.":
+        "Elindeki Cheaper Inference anahtarı üzerinden düz bir soru ve düz bir cevap. "
+        "Komut çalıştırmaz, dosya açmaz, servislerinin hiçbirine erişmez; yani "
+        "Peru'nun başkentini söyler ama takviminde ne olduğunu söyleyemez. "
+        "Yukarıdaki çalışma dizini ve izinler burada bir şey ifade etmez.",
+    "Needs no program installed, only a Cheaper Inference key.":
+        "Kurulu bir programa değil, yalnızca bir Cheaper Inference anahtarına "
+        "ihtiyaç duyar.",
     "A plain question and a plain answer, over the Requesty key you already "
     "have. It runs no commands, opens no files and reaches none of your "
     "services, so it can tell you what the capital of Peru is but not what is "

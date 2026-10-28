@@ -29,8 +29,8 @@ from . import ggml
 from . import paths
 from .i18n import t
 
-PROVIDERS = ("openrouter", "requesty", "gemini", "deepseek", "opencode", "custom", "local",
-             "claude", "codex", "agy")
+PROVIDERS = ("openrouter", "requesty", "gemini", "deepseek", "opencode",
+             "cheaperinference", "custom", "local", "claude", "codex", "agy")
 
 
 class CleanupError(api.ApiError):
@@ -72,6 +72,8 @@ def model(conf):
         return conf["cleanup_deepseek_model"]
     if name == "opencode":
         return conf["cleanup_opencode_model"]
+    if name == "cheaperinference":
+        return conf["cleanup_cheaperinference_model"]
     if name == "requesty":
         return conf["cleanup_requesty_model"]
     if name == "custom":
@@ -114,6 +116,14 @@ def run(text, conf, system_prompt, timeout=180, aborter=None):
             reasoning=conf["cleanup_reasoning"],
             base_url=conf["opencode_base_url"], timeout=timeout,
             provider="opencode", service="OpenCode Go", aborter=aborter,
+        )
+    if name == "cheaperinference":
+        return api.cleanup(
+            text, conf.cheaperinference_key(), conf["cleanup_cheaperinference_model"],
+            system_prompt, reasoning=conf["cleanup_reasoning"],
+            base_url=conf["cheaperinference_base_url"], timeout=timeout,
+            provider="cheaperinference", service="Cheaper Inference",
+            aborter=aborter,
         )
     if name == "requesty":
         return api.cleanup(

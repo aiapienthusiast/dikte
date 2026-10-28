@@ -61,6 +61,7 @@ class Provider(DikteTest):
         self.assertEqual(cleanup.executable("openrouter"), "")
         self.assertEqual(cleanup.executable("gemini"), "")
         self.assertEqual(cleanup.executable("opencode"), "")
+        self.assertEqual(cleanup.executable("cheaperinference"), "")
         self.assertEqual(cleanup.executable("deepseek"), "")
 
     def test_the_model_named_in_the_history_is_the_one_that_did_it(self):
@@ -93,6 +94,9 @@ class Provider(DikteTest):
         self.assertEqual(
             cleanup.model(self.config(cleanup_provider="opencode",
                                       cleanup_opencode_model="glm-5.3")), "glm-5.3")
+        self.assertEqual(
+            cleanup.model(self.config(cleanup_provider="cheaperinference")),
+            "gpt-5.4-mini")
 
 
 class OpenRouter(DikteTest):
@@ -163,6 +167,44 @@ class OpenCode(DikteTest):
     def test_no_cli_is_started_for_it(self):
         conf = self.config(cleanup_provider="opencode",
                            opencode_api_key="opencode-test-key")
+        patcher, calls = fake_cli(stdout="never")
+        with patcher, mock.patch.object(api, "cleanup", return_value="Done."):
+            cleanup.run("uh, done", conf, "the rules")
+        self.assertEqual(calls, [])
+
+
+class CheaperInference(DikteTest):
+    def test_it_is_one_request_with_the_settings_as_they_were(self):
+        conf = self.config(cleanup_provider="cheaperinference",
+                           cheaperinference_api_key="cheaperinference-test-key",
+                           cleanup_cheaperinference_model="some-model",
+                           cleanup_reasoning="low")
+        with mock.patch.object(api, "cleanup", return_value="Done.") as call:
+            self.assertEqual(cleanup.run("uh, done", conf, "the rules"), "Done.")
+        text, key, model, prompt = call.call_args.args
+        self.assertEqual((text, key, model, prompt),
+                         ("uh, done", "cheaperinference-test-key", "some-model",
+                          "the rules"))
+        self.assertEqual(call.call_args.kwargs["reasoning"], "low")
+        self.assertEqual(call.call_args.kwargs["provider"], "cheaperinference")
+        self.assertEqual(call.call_args.kwargs["service"], "Cheaper Inference")
+        self.assertEqual(call.call_args.kwargs["base_url"],
+                         "https://api.cheaperinference.com/v1")
+
+    def test_the_request_goes_to_its_endpoint(self):
+        conf = self.config(cleanup_provider="cheaperinference",
+                           cheaperinference_api_key="cheaperinference-test-key")
+        with fake_urlopen({"choices": [{"message": {"content": "Done."}}]}) as calls:
+            self.assertEqual(cleanup.run("uh, done", conf, "the rules"), "Done.")
+        self.assertEqual(calls[0].full_url,
+                         "https://api.cheaperinference.com/v1/chat/completions")
+        self.assertEqual(calls[0].get_header("Authorization"),
+                         "Bearer cheaperinference-test-key")
+        self.assertEqual(sent_json(calls[0])["model"], "gpt-5.4-mini")
+
+    def test_no_cli_is_started_for_it(self):
+        conf = self.config(cleanup_provider="cheaperinference",
+                           cheaperinference_api_key="cheaperinference-test-key")
         patcher, calls = fake_cli(stdout="never")
         with patcher, mock.patch.object(api, "cleanup", return_value="Done."):
             cleanup.run("uh, done", conf, "the rules")
